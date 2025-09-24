@@ -210,6 +210,44 @@ class AnomalyDetectionWidget(QWidget):
         self.progress_bar.setVisible(False)
         upload_layout.addWidget(self.progress_bar)
         
+        # 图片预览区域
+        preview_frame = QFrame()
+        preview_frame.setFrameStyle(QFrame.StyledPanel)
+        preview_frame.setStyleSheet("""
+            QFrame {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: white;
+            }
+        """)
+        preview_layout = QVBoxLayout(preview_frame)
+        preview_layout.setContentsMargins(5, 5, 5, 5)
+        
+        preview_title = QLabel("图片预览")
+        preview_title.setFont(QFont("Arial", 10, QFont.Bold))
+        preview_title.setAlignment(Qt.AlignCenter)
+        preview_layout.addWidget(preview_title)
+        
+        self.image_preview = QLabel()
+        self.image_preview.setAlignment(Qt.AlignCenter)
+        self.image_preview.setStyleSheet("""
+            QLabel {
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                background-color: #f9f9f9;
+                color: #999;
+                font-size: 12px;
+            }
+        """)
+        self.image_preview.setMinimumSize(200, 150)
+        self.image_preview.setMaximumSize(300, 200)
+        self.image_preview.setText("暂无图片预览")
+        preview_layout.addWidget(self.image_preview)
+        
+        preview_frame.setMaximumHeight(250)
+        preview_frame.setMinimumHeight(200)
+        upload_layout.addWidget(preview_frame)
+        
         # 添加弹性空间
         upload_layout.addStretch()
         
@@ -397,10 +435,40 @@ class AnomalyDetectionWidget(QWidget):
                 self.image_path = file_path
                 self.image_name_label.setText(os.path.basename(file_path))
                 self.image_name_label.setStyleSheet("color: black; font-weight: bold;")
+                
+                # 显示图片预览
+                self.display_image_preview(file_path)
+                
                 self.update_process_button_state()
                 logger.info(f"选择了图片: {os.path.basename(file_path)}")
             else:
                 QMessageBox.warning(self, "格式错误", f"文件 {os.path.basename(file_path)} 不是有效的图片格式")
+            
+    def display_image_preview(self, image_path):
+        """显示图片预览"""
+        try:
+            if os.path.exists(image_path):
+                pixmap = QPixmap(image_path)
+                if not pixmap.isNull():
+                    # 计算预览尺寸，保持宽高比
+                    preview_size = self.image_preview.size()
+                    scaled_pixmap = pixmap.scaled(
+                        preview_size.width() - 10,  # 留出边框空间
+                        preview_size.height() - 10,
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation
+                    )
+                    self.image_preview.setPixmap(scaled_pixmap)
+                    logger.info(f"显示图片预览: {os.path.basename(image_path)}")
+                else:
+                    self.image_preview.setText("无法加载图片预览")
+                    logger.warning(f"无法加载图片预览: {image_path}")
+            else:
+                self.image_preview.setText("图片文件不存在")
+                logger.error(f"图片文件不存在: {image_path}")
+        except Exception as e:
+            logger.error(f"显示图片预览失败: {str(e)}")
+            self.image_preview.setText("预览加载失败")
             
     def validate_image_format(self, file_path):
         """验证图片格式"""
@@ -413,6 +481,11 @@ class AnomalyDetectionWidget(QWidget):
         self.image_path = None
         self.image_name_label.setText("未选择图片")
         self.image_name_label.setStyleSheet("color: gray; font-style: italic;")
+        
+        # 清空图片预览
+        self.image_preview.clear()
+        self.image_preview.setText("暂无图片预览")
+        
         self.update_process_button_state()
         logger.info("已清空图片")
         
