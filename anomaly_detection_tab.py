@@ -603,6 +603,9 @@ class AnomalyDetectionWidget(QWidget):
                 with open(self.current_results['json'], 'r', encoding='utf-8') as f:
                     json_data = json.load(f)
                 
+                # 检查异常级别并弹出警告
+                self.check_anomaly_level(json_data)
+                
                 # 格式化JSON数据
                 formatted_json = json.dumps(json_data, ensure_ascii=False, indent=2)
                 
@@ -619,6 +622,64 @@ class AnomalyDetectionWidget(QWidget):
             json_display = self.json_tab.findChild(QTextEdit)
             if json_display:
                 json_display.setText(f"JSON结果显示错误: {str(e)}")
+    
+    def check_anomaly_level(self, json_data):
+        """检查异常级别并弹出警告窗口"""
+        try:
+            anomaly_level = json_data.get('anomaly_level', '')
+            
+            # 检查是否为需要弹出警告的异常级别
+            if anomaly_level in ['中等异常可能性', '很可能异常']:
+                self.show_anomaly_warning(anomaly_level)
+                logger.info(f"检测到异常级别: {anomaly_level}，已弹出警告窗口")
+                
+        except Exception as e:
+            logger.error(f"检查异常级别失败: {str(e)}")
+    
+    def show_anomaly_warning(self, anomaly_level):
+        """显示异常警告弹窗"""
+        try:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("异常检测警告")
+            msg_box.setText("输出模拟电压")
+            msg_box.setInformativeText(f"检测到异常级别: {anomaly_level}")
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            
+            # 设置弹窗尺寸，使其更宽
+            msg_box.resize(400, 150)
+            
+            # 设置弹窗样式
+            msg_box.setStyleSheet("""
+                QMessageBox {
+                    background-color: white;
+                    font-size: 12px;
+                    min-width: 400px;
+                }
+                QMessageBox QLabel {
+                    color: #333;
+                    font-weight: bold;
+                    font-size: 14px;
+                }
+                QMessageBox QPushButton {
+                    background-color: #2196F3;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    min-width: 100px;
+                    font-size: 12px;
+                }
+                QMessageBox QPushButton:hover {
+                    background-color: #1976D2;
+                }
+            """)
+            
+            msg_box.exec_()
+            
+        except Exception as e:
+            logger.error(f"显示异常警告弹窗失败: {str(e)}")
             
     def refresh_page(self):
         """刷新页面"""
