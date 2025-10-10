@@ -1,3 +1,4 @@
+import json
 import sys
 import os
 import logging
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class ImageProcessingThread(QThread):
     """图片处理线程"""
-    finished = pyqtSignal(str)  # 处理完成信号，传递结果图片路径
+    finished = pyqtSignal(str, str)  # 处理完成信号，传递结果图片路径
     error = pyqtSignal(str)     # 错误信号
     progress = pyqtSignal(str)  # 进度信号
     
@@ -53,13 +54,13 @@ class ImageProcessingThread(QThread):
             self.progress.emit("正在连接远程服务器...")
             ssh_client = SSHClient()
             self.progress.emit("正在上传图片到远程服务器...")
-            result_path = ssh_client.process_images(temp_dir)
+            result_path, local_result_json = ssh_client.process_images(temp_dir)
             
             # 清理临时目录
             shutil.rmtree(temp_dir)
             logger.info(f"清理临时目录: {temp_dir}")
             
-            self.finished.emit(result_path)
+            self.finished.emit(result_path, local_result_json)
             
         except Exception as e:
             error_msg = f"图片处理失败: {str(e)}"
@@ -372,17 +373,17 @@ class FilmTrendAnalysisWidget(QWidget):
         
     def update_process_button_state(self):
         """更新处理按钮状态"""
-        if len(self.image_paths) >= 15:
+        if len(self.image_paths) > 15:
             self.process_btn.setEnabled(True)
             self.process_btn.setText(f"开始处理 ({len(self.image_paths)} 张图片)")
         else:
             self.process_btn.setEnabled(False)
-            self.process_btn.setText(f"需要至少15张图片 (当前: {len(self.image_paths)} 张)")
-            
+            self.process_btn.setText(f"需要至少16张图片 (当前: {len(self.image_paths)} 张)")
+
     def start_processing(self):
         """开始处理图片"""
-        if len(self.image_paths) < 15:
-            QMessageBox.warning(self, "图片数量不足", "至少需要15张图片才能开始处理")
+        if len(self.image_paths) < 16:
+            QMessageBox.warning(self, "图片数量不足", "至少需要16张图片才能开始处理")
             return
             
         # 禁用处理按钮
@@ -399,17 +400,25 @@ class FilmTrendAnalysisWidget(QWidget):
         self.processing_thread.progress.connect(self.on_processing_progress)
         self.processing_thread.start()
         
-    def on_processing_finished(self, result_path):
+    def on_processing_finished(self, result_path, json_path):
         """处理完成回调"""
         self.progress_bar.setVisible(False)
         self.process_btn.setEnabled(True)
+
+        # 保存结果路径
+        self.current_results = {
+            'prediction': result_path,
+            'json': json_path
+        }
         
         # 显示结果图片
         self.display_result_image(result_path)
+
+        # 显示JSON结果
+        self.display_json_result()
         
         logger.info(f"图片处理完成，结果保存至: {result_path}")
-        # QMessageBox.information(self, "处理完成", f"图片处理完成！\n结果已保存至: {result_path}")
-        
+
     def on_processing_error(self, error_msg):
         """处理错误回调"""
         self.progress_bar.setVisible(False)
@@ -443,7 +452,80 @@ class FilmTrendAnalysisWidget(QWidget):
         except Exception as e:
             logger.error(f"显示图片失败: {str(e)}")
             self.image_display.setText("显示图片时出错")
+
+    def display_json_result(self):
+        """显示JSON结果"""
+        try:
+            if not self.current_results:
+                return
+            if self.current_results and os.path.exists(self.current_results['json']):
+                with open(self.current_results['json'], 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+                
+                # 检查异常级别并弹出警告
+                self.check_pred_level(json_data)
+
+        except Exception as e:
+            logger.error(f"显示JSON结果失败: {str(e)}")
             
+    def check_pred_level(self, json_data):
+        """检查异常级别并弹出警告窗口"""
+        try:
+            pred_level = json_data.get('pred_level', '')
+            
+            # 检查是否为需要弹出警告的异常级别
+            if pred_level in ['中等预测异常可能性', '很可能预测异常']:
+                self.show_pred_warning(pred_level)
+                logger.info(f"检测到异常级别: {pred_level}，已弹出警告窗口")
+                
+        except Exception as e:
+            logger.error(f"检查异常级别失败: {str(e)}")
+    
+    def show_pred_warning(self, pred_level):
+        """显示异常警告弹窗"""
+        try:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("异常预测警告")
+            msg_box.setText("输出模拟电压")
+            msg_box.setInformativeText(f"检测到异常级别: {pred_level}")
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            
+            # 设置弹窗尺寸，使其更宽
+            msg_box.resize(400, 150)
+            
+            # 设置弹窗样式
+            msg_box.setStyleSheet("""
+                QMessageBox {
+                    background-color: white;
+                    font-size: 12px;
+                    min-width: 400px;
+                }
+                QMessageBox QLabel {
+                    color: #333;
+                    font-weight: bold;
+                    font-size: 14px;
+                }
+                QMessageBox QPushButton {
+                    background-color: #2196F3;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    min-width: 100px;
+                    font-size: 12px;
+                }
+                QMessageBox QPushButton:hover {
+                    background-color: #1976D2;
+                }
+            """)
+            
+            msg_box.exec_()
+            
+        except Exception as e:
+            logger.error(f"显示异常警告弹窗失败: {str(e)}")
+
     def refresh_page(self):
         """刷新页面"""
         # 清空图片列表
