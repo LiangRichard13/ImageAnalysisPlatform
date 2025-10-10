@@ -1,10 +1,11 @@
+import json
 import sys
 import os
 import logging
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QSplitter, QPushButton, QListWidget, 
                              QLabel, QTextEdit, QFileDialog, QMessageBox, 
-                             QScrollArea, QFrame, QProgressBar)
+                             QScrollArea, QFrame, QProgressBar, QTabWidget)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject
 from PyQt5.QtGui import QPixmap, QFont
 from utils.ssh_client_film_trend_analysis import SSHClient
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 class ImageProcessingThread(QThread):
     """图片处理线程"""
-    finished = pyqtSignal(str)  # 处理完成信号，传递结果图片路径
+    finished = pyqtSignal(str, str)  # 处理完成信号，传递结果图片路径
     error = pyqtSignal(str)     # 错误信号
     progress = pyqtSignal(str)  # 进度信号
     
@@ -53,13 +54,13 @@ class ImageProcessingThread(QThread):
             self.progress.emit("正在连接远程服务器...")
             ssh_client = SSHClient()
             self.progress.emit("正在上传图片到远程服务器...")
-            result_path = ssh_client.process_images(temp_dir)
+            result_path, local_result_json = ssh_client.process_images(temp_dir)
             
             # 清理临时目录
             shutil.rmtree(temp_dir)
             logger.info(f"清理临时目录: {temp_dir}")
             
-            self.finished.emit(result_path)
+            self.finished.emit(result_path, local_result_json)
             
         except Exception as e:
             error_msg = f"图片处理失败: {str(e)}"
@@ -272,10 +273,54 @@ class FilmTrendAnalysisWidget(QWidget):
         
         display_layout.addLayout(header_layout)
         
+        # 创建标签页显示不同类型的结果
+        self.result_tabs = QTabWidget()
+        self.result_tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: white;
+            }
+            QTabBar::tab {
+                background-color: #f0f0f0;
+                color: #333;
+                padding: 8px 16px;
+                margin-right: 2px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+                font-weight: bold;
+            }
+            QTabBar::tab:selected {
+                background-color: white;
+                color: #2196F3;
+                border-bottom: 2px solid #2196F3;
+            }
+            QTabBar::tab:hover {
+                background-color: #e0e0e0;
+            }
+        """)
+        
+        # 预测结果标签页
+        self.prediction_tab = self.create_image_tab("预测结果")
+        self.result_tabs.addTab(self.prediction_tab, "预测结果")
+        
+        # JSON结果标签页
+        self.json_tab = self.create_json_tab()
+        self.result_tabs.addTab(self.json_tab, "JSON结果")
+        
+        display_layout.addWidget(self.result_tabs)
+        
+        parent_splitter.addWidget(display_frame)
+        
+    def create_image_tab(self, tab_name):
+        """创建图片显示标签页"""
+        tab_widget = QWidget()
+        layout = QVBoxLayout(tab_widget)
+        
         # 图片显示区域
-        self.image_display = QLabel()
-        self.image_display.setAlignment(Qt.AlignCenter)
-        self.image_display.setStyleSheet("""
+        image_display = QLabel()
+        image_display.setAlignment(Qt.AlignCenter)
+        image_display.setStyleSheet("""
             QLabel {
                 border: 1px solid #ccc;
                 border-radius: 4px;
@@ -284,16 +329,40 @@ class FilmTrendAnalysisWidget(QWidget):
                 font-size: 14px;
             }
         """)
-        self.image_display.setMinimumSize(400, 300)
-        self.image_display.setText("暂无处理结果")
+        image_display.setMinimumSize(400, 300)
+        image_display.setText(f"暂无{tab_name}")
         
         # 使用滚动区域
         scroll_area = QScrollArea()
-        scroll_area.setWidget(self.image_display)
+        scroll_area.setWidget(image_display)
         scroll_area.setWidgetResizable(True)
-        display_layout.addWidget(scroll_area)
+        layout.addWidget(scroll_area)
         
-        parent_splitter.addWidget(display_frame)
+        return tab_widget
+        
+    def create_json_tab(self):
+        """创建JSON结果显示标签页"""
+        tab_widget = QWidget()
+        layout = QVBoxLayout(tab_widget)
+        
+        # JSON文本显示区域
+        json_display = QTextEdit()
+        json_display.setReadOnly(True)
+        json_display.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: white;
+                font-family: 'Courier New', monospace;
+                font-size: 11px;
+                color: #333;
+            }
+        """)
+        json_display.setMinimumSize(400, 300)
+        json_display.setText("暂无JSON结果")
+        layout.addWidget(json_display)
+        
+        return tab_widget
         
     def create_log_area(self, parent_splitter):
         """创建日志区域"""
@@ -402,17 +471,25 @@ class FilmTrendAnalysisWidget(QWidget):
         self.processing_thread.progress.connect(self.on_processing_progress)
         self.processing_thread.start()
         
-    def on_processing_finished(self, result_path):
+    def on_processing_finished(self, result_path, json_path):
         """处理完成回调"""
         self.progress_bar.setVisible(False)
         self.process_btn.setEnabled(True)
+
+        # 保存结果路径
+        self.current_results = {
+            'prediction': result_path,
+            'json': json_path
+        }
         
         # 显示结果图片
         self.display_result_image(result_path)
+
+        # 显示JSON结果
+        self.display_json_result()
         
-        logger.info(f"图片处理完成，结果保存至: {result_path}")
-        # QMessageBox.information(self, "处理完成", f"图片处理完成！\n结果已保存至: {result_path}")
-        
+        logger.info(f"图片处理完成，结果保存至: {result_path}和{json_path}")
+
     def on_processing_error(self, error_msg):
         """处理错误回调"""
         self.progress_bar.setVisible(False)
@@ -426,38 +503,159 @@ class FilmTrendAnalysisWidget(QWidget):
         logger.info(progress_msg)
         
     def display_result_image(self, image_path):
-        """显示结果图片"""
+        """显示结果图片到标签页"""
         try:
             if os.path.exists(image_path):
-                pixmap = QPixmap(image_path)
-                if not pixmap.isNull():
-                    # 缩放图片以适应显示区域
-                    scaled_pixmap = pixmap.scaled(
-                        self.image_display.size(), 
-                        Qt.KeepAspectRatio, 
-                        Qt.SmoothTransformation
-                    )
-                    self.image_display.setPixmap(scaled_pixmap)
-                    self.current_result_path = image_path
-                else:
-                    self.image_display.setText("无法加载图片")
+                # 获取预测结果标签页中的图片显示组件
+                scroll_area = self.prediction_tab.findChild(QScrollArea)
+                if scroll_area:
+                    image_display = scroll_area.widget()
+                    if isinstance(image_display, QLabel):
+                        pixmap = QPixmap(image_path)
+                        if not pixmap.isNull():
+                            # 缩放图片以适应显示区域
+                            scaled_pixmap = pixmap.scaled(
+                                image_display.size(), 
+                                Qt.KeepAspectRatio, 
+                                Qt.SmoothTransformation
+                            )
+                            image_display.setPixmap(scaled_pixmap)
+                            self.current_result_path = image_path
+                        else:
+                            image_display.setText("无法加载图片")
+                    else:
+                        image_display.setText("无法加载图片")
             else:
-                self.image_display.setText("图片文件不存在")
+                # 获取预测结果标签页中的图片显示组件
+                scroll_area = self.prediction_tab.findChild(QScrollArea)
+                if scroll_area:
+                    image_display = scroll_area.widget()
+                    if isinstance(image_display, QLabel):
+                        image_display.setText("图片文件不存在")
         except Exception as e:
             logger.error(f"显示图片失败: {str(e)}")
-            self.image_display.setText("显示图片时出错")
+            scroll_area = self.prediction_tab.findChild(QScrollArea)
+            if scroll_area:
+                image_display = scroll_area.widget()
+                if isinstance(image_display, QLabel):
+                    image_display.setText("显示图片时出错")
+
+    def display_json_result(self):
+        """显示JSON结果到标签页"""
+        try:
+            if not self.current_results:
+                return
+            if self.current_results and os.path.exists(self.current_results['json']):
+                with open(self.current_results['json'], 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+                
+                # 检查异常级别并弹出警告
+                self.check_pred_level(json_data)
+                
+                # 格式化JSON数据
+                formatted_json = json.dumps(json_data, ensure_ascii=False, indent=2)
+                
+                # 获取JSON标签页中的文本显示组件
+                json_display = self.json_tab.findChild(QTextEdit)
+                if json_display:
+                    json_display.setText(formatted_json)
+            else:
+                json_display = self.json_tab.findChild(QTextEdit)
+                if json_display:
+                    json_display.setText("暂无JSON结果")
+        except Exception as e:
+            logger.error(f"显示JSON结果失败: {str(e)}")
+            json_display = self.json_tab.findChild(QTextEdit)
+            if json_display:
+                json_display.setText(f"JSON结果显示错误: {str(e)}")
             
+    def check_pred_level(self, json_data):
+        """检查异常级别并弹出警告窗口"""
+        try:
+            pred_level = json_data.get('pred_level', '')
+            
+            # 检查是否为需要弹出警告的异常级别
+            if pred_level in ['中等预测异常可能性', '很可能预测异常']:
+                self.show_pred_warning(pred_level)
+                logger.info(f"检测到异常级别: {pred_level}，已弹出警告窗口")
+                
+        except Exception as e:
+            logger.error(f"检查异常级别失败: {str(e)}")
+    
+    def show_pred_warning(self, pred_level):
+        """显示异常警告弹窗"""
+        try:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("异常预测警告")
+            msg_box.setText("输出模拟电压")
+            msg_box.setInformativeText(f"检测到异常级别: {pred_level}")
+            msg_box.setIcon(QMessageBox.Warning)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            
+            # 设置弹窗尺寸，使其更宽
+            msg_box.resize(400, 150)
+            
+            # 设置弹窗样式
+            msg_box.setStyleSheet("""
+                QMessageBox {
+                    background-color: white;
+                    font-size: 12px;
+                    min-width: 400px;
+                }
+                QMessageBox QLabel {
+                    color: #333;
+                    font-weight: bold;
+                    font-size: 14px;
+                }
+                QMessageBox QPushButton {
+                    background-color: #2196F3;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    min-width: 100px;
+                    font-size: 12px;
+                }
+                QMessageBox QPushButton:hover {
+                    background-color: #1976D2;
+                }
+            """)
+            
+            msg_box.exec_()
+            
+        except Exception as e:
+            logger.error(f"显示异常警告弹窗失败: {str(e)}")
+
     def refresh_page(self):
         """刷新页面"""
         # 清空图片列表
         self.clear_image_list()
         
         # 清空结果图片
-        self.image_display.clear()
-        self.image_display.setText("暂无处理结果")
+        self.clear_result_displays()
         self.current_result_path = None
         
         logger.info("页面已刷新")
+        
+    def clear_result_displays(self):
+        """清空结果显示"""
+        # 清空预测结果
+        self.clear_image_display(self.prediction_tab, "预测结果")
+        
+        # 清空JSON结果
+        json_display = self.json_tab.findChild(QTextEdit)
+        if json_display:
+            json_display.setText("暂无JSON结果")
+            
+    def clear_image_display(self, tab_widget, result_type):
+        """清空图片显示"""
+        scroll_area = tab_widget.findChild(QScrollArea)
+        if scroll_area:
+            image_display = scroll_area.widget()
+            if isinstance(image_display, QLabel):
+                image_display.clear()
+                image_display.setText(f"暂无{result_type}")
         
     def append_log(self, message):
         """添加日志到界面"""
