@@ -72,6 +72,9 @@ class FilmTrendAnalysisWidget(QWidget):
         self.image_paths = []  # 存储上传的图片路径
         self.current_result_path = None  # 当前处理结果图片路径
         self.processing_thread = None  # 处理线程
+
+        # 预测所需的图片数量
+        self.needed_image_count = 16
         
         self.init_ui()
         self.setup_logging()
@@ -372,17 +375,17 @@ class FilmTrendAnalysisWidget(QWidget):
         
     def update_process_button_state(self):
         """更新处理按钮状态"""
-        if len(self.image_paths) >= 15:
+        if len(self.image_paths) >= self.needed_image_count:
             self.process_btn.setEnabled(True)
             self.process_btn.setText(f"开始处理 ({len(self.image_paths)} 张图片)")
         else:
             self.process_btn.setEnabled(False)
-            self.process_btn.setText(f"需要至少15张图片 (当前: {len(self.image_paths)} 张)")
+            self.process_btn.setText(f"需要至少{self.needed_image_count}张图片 (当前: {len(self.image_paths)} 张)")
             
     def start_processing(self):
         """开始处理图片"""
-        if len(self.image_paths) < 15:
-            QMessageBox.warning(self, "图片数量不足", "至少需要15张图片才能开始处理")
+        if len(self.image_paths) < self.needed_image_count:
+            QMessageBox.warning(self, f"图片数量不足", "至少需要{self.needed_image_count}张图片才能开始处理")
             return
             
         # 禁用处理按钮
