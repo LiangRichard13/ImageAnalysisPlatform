@@ -4,7 +4,6 @@ import os
 import paramiko
 import time
 import logging
-import json
 
 logger = logging.getLogger(__name__)
 
@@ -135,28 +134,35 @@ class SSHClient:
         # 本地下载地址
         local_result_dir = os.path.join(self.local_download_dir, self.process_id)
         local_result_file = os.path.join(local_result_dir, 'prediction.jpg')
+        local_result_json = os.path.join(local_result_dir, f"{self.process_id}.json")
 
         # 如果没有这个文件夹，则创建
         if not os.path.exists(local_result_dir):
             os.makedirs(local_result_dir)
 
         # 拼接远程结果文件路径
-        remote_result = os.path.join(self.remote_result_dir_path,"prediction.jpg").replace('\\', '/')
+        remote_result = os.path.join(self.remote_result_dir_path, "prediction.jpg").replace('\\', '/')
+        remote_result_json = os.path.join(self.remote_result_dir_path, f"{self.process_id}.json").replace('\\', '/')
 
         logger.info(f"准备下载文件: {remote_result} -> {local_result_file}")
+        logger.info(f"准备下载文件: {remote_result_json} -> {local_result_json}")
 
         # 下载结果可视化文件
         try:
             self.sftp.get(remotepath=remote_result, localpath=local_result_file)
+            self.sftp.get(remotepath=remote_result_json, localpath=local_result_json)
             logger.info(f"成功下载结果文件: {local_result_file}")
+            logger.info(f"成功下载结果文件: {local_result_json}")
 
         except Exception as e:
             logger.error(f"下载结果失败: {e}")
             logger.error(f"远程文件路径: {remote_result}")
+            logger.error(f"远程文件路径: {remote_result_json}")
             logger.error(f"本地文件路径: {local_result_file}")
+            logger.error(f"本地文件路径: {local_result_json}")
             raise e
 
-        return local_result_file
+        return local_result_file, local_result_json
 
     def process_images(self, dir_path: str):
         """
@@ -200,9 +206,9 @@ class SSHClient:
                 raise Exception("处理超时")
             else:
                 # 下载结果文件
-                pred_file_path = self.download_result()
+                pred_file_path, local_result_json = self.download_result()
                 
-                return pred_file_path
+                return pred_file_path, local_result_json
         except Exception as e:
             logger.error(f"处理过程中出现错误: {e}")
             raise e
@@ -263,5 +269,7 @@ class SSHClient:
 
 if __name__ == "__main__":
     ssh_client = SSHClient()
-    pred_file_path = ssh_client.process_images(dir_path="C:/Users/Administrator/Desktop/项目/analysis_system/test")
-    print(pred_file_path)
+    pred_file_path, local_result_json = ssh_client.process_images(dir_path="C:/Users/Administrator/Desktop/项目/analysis_system/test")
+    print(pred_file_path, local_result_json)
+    pred_file_path, pred_level = ssh_client.process_images(dir_path="C:/Users/Administrator/Desktop/项目/analysis_system/test")
+    print(pred_file_path, pred_level)
