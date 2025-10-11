@@ -19,6 +19,8 @@ class SSHClient:
         self.remote_base_path = os.getenv('SSH_REMOTE_BASE_PATH_TREND_ANALYSIS').replace('\\', '/')
         self.remote_image_path = os.path.join(self.remote_base_path,'upload',self.process_id).replace('\\', '/')
         self.remote_result_dir_path = os.path.join(self.remote_base_path,'output',self.process_id).replace('\\', '/')
+        self.conda_executable = os.getenv('CONDA_EXECUTABLE_TREND_ANALYSIS')
+        self.conda_env_name = os.getenv('CONDA_ENV_NAME_TREND_ANALYSIS')
         self.local_download_dir = "download"
 
     def connect(self):
@@ -180,9 +182,8 @@ class SSHClient:
             remote_target_dir = self.transfer_images_from_directory(dir_path, self.process_id)
 
             # 执行Python命令,首先进入工作目录并激活conda环境
-            conda_executable = '/home/sstl/miniconda3/bin/conda'
             cmd = f'''bash -c 'cd {self.remote_base_path} && \
-{conda_executable} run -n predr python3 api.py --folder_path {remote_target_dir} --process_id {self.process_id}
+{self.conda_executable} run -n {self.conda_env_name} python3 api.py --folder_path {remote_target_dir} --process_id {self.process_id}
 ' '''
             stdin, stdout, stderr = self.ssh.exec_command(cmd)
             
