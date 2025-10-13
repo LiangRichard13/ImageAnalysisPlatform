@@ -630,18 +630,21 @@ class AnomalyDetectionWidget(QWidget):
             
             # 检查是否为需要弹出警告的异常级别
             if anomaly_level in ['中等异常可能性', '很可能异常']:
-                self.show_anomaly_warning(anomaly_level)
+                self.show_anomaly_warning(anomaly_level, json_data)
                 logger.info(f"检测到异常级别: {anomaly_level}，已弹出警告窗口")
                 
         except Exception as e:
             logger.error(f"检查异常级别失败: {str(e)}")
     
-    def show_anomaly_warning(self, anomaly_level):
+    def show_anomaly_warning(self, anomaly_level, json_data):
         """显示异常警告弹窗"""
         try:
+            # 获取模拟电压数值
+            analog_voltage = json_data.get('analog_voltage', '未知')
+            
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("异常检测警告")
-            msg_box.setText("输出模拟电压")
+            msg_box.setText(f"模拟电压: {analog_voltage}")
             msg_box.setInformativeText(f"检测到异常级别: {anomaly_level}")
             msg_box.setIcon(QMessageBox.Warning)
             msg_box.setStandardButtons(QMessageBox.Ok)

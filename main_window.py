@@ -156,7 +156,7 @@ class MainWindow(QMainWindow):
         nav_layout.setContentsMargins(20, 10, 20, 10)
         
         # 系统标题
-        title_label = QLabel("分析系统")
+        title_label = QLabel("镀膜状态数字孪生在线分析系统")
         title_label.setFont(QFont("Arial", 16, QFont.Bold))
         title_label.setStyleSheet("color: #2c3e50;")
         nav_layout.addWidget(title_label)

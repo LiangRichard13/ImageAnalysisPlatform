@@ -163,9 +163,14 @@ class SSHClient:
             # 上传图片
             remote_target_dir = self.transfer_single_image_file(image_path, self.process_id)
 
+            # 判断图片类型并选择相应的脚本
+            is_long = self.is_long_image(image_path)
+            script_name = "api_v2.py" if is_long else "api.py"
+            logger.info(f"图片类型判断: {'长图' if is_long else '普通图'}, 使用脚本: {script_name}")
+
             # 执行Python命令,首先进入工作目录并激活conda环境
             cmd = f'''bash -c 'cd {self.remote_base_path} && \
-{self.conda_executable} run -n {self.conda_env_name} python3 api.py --file_path {remote_target_dir} --process_id {self.process_id}
+{self.conda_executable} run -n {self.conda_env_name} python3 {script_name} --file_path {remote_target_dir} --process_id {self.process_id}
 ' '''
             stdin, stdout, stderr = self.ssh.exec_command(cmd)
             
@@ -226,6 +231,27 @@ class SSHClient:
                 logger.error(f"检查远程文件时出错: {e}")
                 time.sleep(3)
                 continue
+
+    def is_long_image(self, image_path: str) -> bool:
+        """
+        判断图片是否为长图（基于宽高比）
+        Args:
+            image_path: 图片文件路径
+        Returns:
+            bool: 是否为长图
+        """
+        try:
+            from PIL import Image
+            with Image.open(image_path) as img:
+                length, width = img.size
+                # 如果长度大于宽度的2倍，则认为是长图
+                is_long = length / width > 2.0
+                logger.info(f"图片尺寸: {length}x{width}, 是否为长图: {is_long}")
+                return is_long
+        except Exception as e:
+            logger.error(f"判断图片类型失败: {str(e)}")
+            # 如果无法判断，默认使用 api_v2.py（保持原有行为）
+            return False
 
     def get_process_id(self)->str:
         """

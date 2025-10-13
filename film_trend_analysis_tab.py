@@ -576,18 +576,21 @@ class FilmTrendAnalysisWidget(QWidget):
             
             # 检查是否为需要弹出警告的异常级别
             if pred_level in ['中等预测异常可能性', '很可能预测异常']:
-                self.show_pred_warning(pred_level)
+                self.show_pred_warning(pred_level, json_data)
                 logger.info(f"检测到异常级别: {pred_level}，已弹出警告窗口")
                 
         except Exception as e:
             logger.error(f"检查异常级别失败: {str(e)}")
     
-    def show_pred_warning(self, pred_level):
+    def show_pred_warning(self, pred_level, json_data):
         """显示异常警告弹窗"""
         try:
+            # 获取模拟电压数值
+            analog_voltage = json_data.get('analog_voltage', '未知')
+            
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle("异常预测警告")
-            msg_box.setText("输出模拟电压")
+            msg_box.setText(f"模拟电压: {analog_voltage}")
             msg_box.setInformativeText(f"检测到异常级别: {pred_level}")
             msg_box.setIcon(QMessageBox.Warning)
             msg_box.setStandardButtons(QMessageBox.Ok)
