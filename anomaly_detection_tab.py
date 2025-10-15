@@ -176,6 +176,7 @@ class BatchProcessingThread(QThread):
     error = pyqtSignal(str)               # 错误信号（静默记录）
     batch_finished = pyqtSignal()         # 批处理完成信号
     image_processed = pyqtSignal(str, str, str)  # 单张图片处理完成信号
+    batch_progress = pyqtSignal(int, int) # 批处理进度信号（当前进度，总数量）
     
     def __init__(self, processing_dir, checkpoint_file=None):
         super().__init__()
@@ -184,6 +185,8 @@ class BatchProcessingThread(QThread):
         self.processed_images = set()
         self.is_running = True
         self.polling_interval = 5  # 轮询间隔5秒
+        self.current_batch_images = []  # 当前批次的图片列表
+        self.current_batch_processed = 0  # 当前批次已处理的图片数量
         
     def run(self):
         try:
@@ -198,18 +201,37 @@ class BatchProcessingThread(QThread):
                 image_files = self.scan_images()
                 
                 if image_files:
-                    logger.info(f"扫描到 {len(image_files)} 张图片待处理")
+                    # 过滤掉已处理的图片
+                    new_images = [img for img in image_files if img not in self.processed_images]
                     
-                    # 处理图片
-                    for image_path in image_files:
-                        if not self.is_running:
-                            break
-                            
-                        if image_path not in self.processed_images:
+                    if new_images:
+                        logger.info(f"扫描到 {len(new_images)} 张新图片待处理")
+                        # 设置当前批次
+                        self.current_batch_images = new_images
+                        self.current_batch_processed = 0
+                        
+                        # 发送批次开始信号
+                        self.batch_progress.emit(0, len(new_images))
+                        
+                        # 处理图片
+                        for image_path in new_images:
+                            if not self.is_running:
+                                logger.info("批处理被中断，停止处理图片")
+                                break
+                                
                             self.process_image(image_path)
+                            self.current_batch_processed += 1
                             
-                # 等待下一次轮询
-                time.sleep(self.polling_interval)
+                            # 发送进度更新信号
+                            self.batch_progress.emit(self.current_batch_processed, len(new_images))
+                    else:
+                        logger.info("无新图片待处理")
+                            
+                # 等待下一次轮询，使用更短的间隔并检查停止标志
+                for _ in range(self.polling_interval * 10):  # 将5秒拆分为50个0.1秒
+                    if not self.is_running:
+                        break
+                    time.sleep(0.1)
                 
             logger.info("批处理已停止")
             self.batch_finished.emit()
@@ -305,6 +327,13 @@ class BatchProcessingThread(QThread):
     def stop(self):
         """停止批处理"""
         self.is_running = False
+    
+    def terminate(self):
+        """强制终止批处理线程"""
+        self.is_running = False
+        if self.isRunning():
+            super().terminate()
+            logger.info("强制终止批处理线程")
 
 class AnomalyDetectionWidget(QWidget):
     def __init__(self):
@@ -822,6 +851,7 @@ class AnomalyDetectionWidget(QWidget):
             self.batch_thread.error.connect(self.on_batch_error)
             self.batch_thread.batch_finished.connect(self.on_batch_finished)
             self.batch_thread.image_processed.connect(self.on_batch_image_processed)
+            self.batch_thread.batch_progress.connect(self.on_batch_progress_update)
             self.batch_thread.start()
             
             # 更新界面状态
@@ -844,11 +874,21 @@ class AnomalyDetectionWidget(QWidget):
             self.batch_thread.stop()
             logger.info("正在停止批处理...")
             
-            # 更新界面状态
-            self.start_batch_btn.setEnabled(True)
+            # 更新界面状态 - 停止过程中禁用两个按钮
+            self.start_batch_btn.setEnabled(False)
             self.stop_batch_btn.setEnabled(False)
             self.batch_status_label.setText("批处理状态: 正在停止...")
             self.batch_status_label.setStyleSheet("color: orange; font-size: 10px;")
+            
+            # 设置超时检查，如果10秒后线程仍在运行，强制终止
+            QTimer.singleShot(10000, self.check_batch_thread_timeout)
+    
+    def check_batch_thread_timeout(self):
+        """检查批处理线程超时，如果仍在运行则强制终止"""
+        if self.batch_thread and self.batch_thread.isRunning():
+            logger.warning("批处理线程超时未停止，强制终止")
+            self.batch_thread.terminate()
+            self.on_batch_finished()  # 手动调用完成回调
     
     def on_batch_progress(self, progress_msg):
         """批处理进度回调"""
@@ -884,6 +924,14 @@ class AnomalyDetectionWidget(QWidget):
         logger.info(f"预测结果: {prediction_path}")
         logger.info(f"热力图: {heatmap_path}")
         logger.info(f"JSON结果: {json_path}")
+    
+    def on_batch_progress_update(self, current, total):
+        """批处理进度更新回调"""
+        if total > 0:
+            progress_text = f"当前批处理进度 {current}/{total}"
+            self.batch_status_label.setText(f"批处理状态: 运行中 | {progress_text}")
+        else:
+            self.batch_status_label.setText("批处理状态: 运行中")
         
     def select_image(self):
         """选择图片文件"""
