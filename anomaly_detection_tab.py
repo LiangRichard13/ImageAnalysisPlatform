@@ -4,13 +4,18 @@ import logging
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QSplitter, QPushButton, QLabel, 
                              QTextEdit, QFileDialog, QMessageBox, 
-                             QScrollArea, QFrame, QProgressBar, QTabWidget)
+                             QScrollArea, QFrame, QProgressBar, QTabWidget,
+                             QDialog, QListWidget, QListWidgetItem, QDialogButtonBox)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject
 from PyQt5.QtGui import QPixmap, QFont
 from utils.ssh_client_anomaly_detection import SSHClient
+from dotenv import load_dotenv
 import tempfile
 import shutil
 import json
+import time
+import datetime
+from pathlib import Path
 
 # 设置日志
 logger = logging.getLogger(__name__)
@@ -42,12 +47,273 @@ class ImageProcessingThread(QThread):
             logger.error(error_msg)
             self.error.emit(error_msg)
 
+class CheckpointSelectionDialog(QDialog):
+    """检查点选择对话框"""
+    def __init__(self, checkpoint_files, checkpoint_dir, parent=None):
+        super().__init__(parent)
+        self.checkpoint_files = checkpoint_files
+        self.checkpoint_dir = checkpoint_dir
+        self.selected_checkpoint = None
+        self.init_ui()
+        
+    def init_ui(self):
+        """初始化对话框界面"""
+        self.setWindowTitle("选择检查点文件")
+        self.setModal(True)
+        self.resize(600, 400)
+        
+        layout = QVBoxLayout(self)
+        
+        # 标题和说明
+        title_label = QLabel("请选择要使用的检查点文件：")
+        title_label.setFont(QFont("Arial", 12, QFont.Bold))
+        layout.addWidget(title_label)
+        
+        info_label = QLabel("检查点文件记录了之前批处理已处理的图片，选择后将继续处理未处理的图片。")
+        info_label.setStyleSheet("color: gray; font-size: 10px;")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
+        # 检查点文件列表
+        self.checkpoint_list = QListWidget()
+        self.checkpoint_list.setSelectionMode(QListWidget.SingleSelection)
+        self.checkpoint_list.itemDoubleClicked.connect(self.on_item_double_clicked)
+        layout.addWidget(self.checkpoint_list)
+        
+        # 加载检查点文件信息
+        self.load_checkpoint_info()
+        
+        # 按钮区域
+        button_layout = QHBoxLayout()
+        
+        self.use_selected_btn = QPushButton("使用选中检查点")
+        self.use_selected_btn.clicked.connect(self.use_selected_checkpoint)
+        self.use_selected_btn.setEnabled(False)
+        button_layout.addWidget(self.use_selected_btn)
+        
+        self.create_new_btn = QPushButton("创建新检查点")
+        self.create_new_btn.clicked.connect(self.create_new_checkpoint)
+        button_layout.addWidget(self.create_new_btn)
+        
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # 连接选择变化信号
+        self.checkpoint_list.itemSelectionChanged.connect(self.on_selection_changed)
+        
+    def load_checkpoint_info(self):
+        """加载检查点文件信息"""
+        for checkpoint_file in self.checkpoint_files:
+            file_path = os.path.join(self.checkpoint_dir, checkpoint_file)
+            try:
+                # 解析文件名中的时间戳
+                timestamp_str = checkpoint_file.replace('.json', '')
+                try:
+                    create_time = datetime.datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                    create_time_str = create_time.strftime("%Y-%m-%d %H:%M:%S")
+                except:
+                    create_time_str = "未知时间"
+                
+                # 读取检查点文件信息
+                processed_count = 0
+                last_update = "未知"
+                if os.path.exists(file_path):
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        checkpoint_data = json.load(f)
+                        processed_count = len(checkpoint_data.get('processed_images', []))
+                        last_update_str = checkpoint_data.get('last_update', '')
+                        if last_update_str:
+                            try:
+                                last_update_dt = datetime.datetime.fromisoformat(last_update_str)
+                                last_update = last_update_dt.strftime("%Y-%m-%d %H:%M:%S")
+                            except:
+                                last_update = "未知"
+                
+                # 创建列表项
+                item_text = f"{checkpoint_file}\n创建时间: {create_time_str} | 已处理: {processed_count} 张图片 | 最后更新: {last_update}"
+                item = QListWidgetItem(item_text)
+                item.setData(Qt.UserRole, checkpoint_file)
+                self.checkpoint_list.addItem(item)
+                
+            except Exception as e:
+                logger.error(f"加载检查点文件信息失败 {checkpoint_file}: {str(e)}")
+                item = QListWidgetItem(f"{checkpoint_file} (加载失败)")
+                item.setData(Qt.UserRole, checkpoint_file)
+                self.checkpoint_list.addItem(item)
+        
+        # 默认选中第一个项目（最新的检查点）
+        if self.checkpoint_list.count() > 0:
+            self.checkpoint_list.setCurrentRow(0)
+    
+    def on_selection_changed(self):
+        """选择变化回调"""
+        selected_items = self.checkpoint_list.selectedItems()
+        self.use_selected_btn.setEnabled(len(selected_items) > 0)
+    
+    def on_item_double_clicked(self, item):
+        """双击项目回调"""
+        self.use_selected_checkpoint()
+    
+    def use_selected_checkpoint(self):
+        """使用选中的检查点"""
+        selected_items = self.checkpoint_list.selectedItems()
+        if selected_items:
+            selected_file = selected_items[0].data(Qt.UserRole)
+            self.selected_checkpoint = os.path.join(self.checkpoint_dir, selected_file)
+            self.accept()
+    
+    def create_new_checkpoint(self):
+        """创建新检查点"""
+        self.selected_checkpoint = None  # None表示创建新检查点
+        self.accept()
+
+class BatchProcessingThread(QThread):
+    """批处理线程"""
+    progress = pyqtSignal(str)            # 进度信号
+    error = pyqtSignal(str)               # 错误信号（静默记录）
+    batch_finished = pyqtSignal()         # 批处理完成信号
+    image_processed = pyqtSignal(str, str, str)  # 单张图片处理完成信号
+    
+    def __init__(self, processing_dir, checkpoint_file=None):
+        super().__init__()
+        self.processing_dir = processing_dir
+        self.checkpoint_file = checkpoint_file
+        self.processed_images = set()
+        self.is_running = True
+        self.polling_interval = 5  # 轮询间隔5秒
+        
+    def run(self):
+        try:
+            logger.info(f"批处理启动，监控文件夹: {self.processing_dir}")
+            
+            # 加载检查点
+            if self.checkpoint_file and os.path.exists(self.checkpoint_file):
+                self.load_checkpoint()
+            
+            while self.is_running:
+                # 扫描图片
+                image_files = self.scan_images()
+                
+                if image_files:
+                    logger.info(f"扫描到 {len(image_files)} 张图片待处理")
+                    
+                    # 处理图片
+                    for image_path in image_files:
+                        if not self.is_running:
+                            break
+                            
+                        if image_path not in self.processed_images:
+                            self.process_image(image_path)
+                            
+                # 等待下一次轮询
+                time.sleep(self.polling_interval)
+                
+            logger.info("批处理已停止")
+            self.batch_finished.emit()
+            
+        except Exception as e:
+            error_msg = f"批处理线程异常: {str(e)}"
+            logger.error(error_msg)
+            self.error.emit(error_msg)
+    
+    def scan_images(self):
+        """扫描指定目录中的图片文件"""
+        try:
+            if not os.path.exists(self.processing_dir):
+                logger.warning(f"监控文件夹不存在: {self.processing_dir}")
+                return []
+                
+            valid_extensions = ['.png', '.jpg', '.jpeg']
+            image_files = []
+            
+            for filename in os.listdir(self.processing_dir):
+                file_path = os.path.join(self.processing_dir, filename)
+                if os.path.isfile(file_path):
+                    _, ext = os.path.splitext(filename.lower())
+                    if ext in valid_extensions:
+                        image_files.append(file_path)
+            
+            # 按创建时间排序（旧的在前，新的在后）
+            image_files.sort(key=lambda x: os.path.getctime(x))
+            
+            return image_files
+            
+        except Exception as e:
+            logger.error(f"扫描图片失败: {str(e)}")
+            return []
+    
+    def process_image(self, image_path):
+        """处理单张图片"""
+        try:
+            logger.info(f"开始处理图片: {os.path.basename(image_path)}")
+            self.progress.emit(f"正在处理图片: {os.path.basename(image_path)}")
+            
+            # 使用现有的图片处理逻辑
+            ssh_client = SSHClient()
+            local_result_pre_image, local_result_heat_map, local_result_json = ssh_client.process_images(image_path)
+            
+            # 记录已处理的图片
+            self.processed_images.add(image_path)
+            
+            # 更新检查点
+            if self.checkpoint_file:
+                self.update_checkpoint()
+            
+            logger.info(f"图片处理完成: {os.path.basename(image_path)}")
+            self.progress.emit(f"图片处理完成: {os.path.basename(image_path)}")
+            
+            # 发送处理完成信号
+            self.image_processed.emit(local_result_pre_image, local_result_heat_map, local_result_json)
+            
+        except Exception as e:
+            error_msg = f"图片处理失败: {os.path.basename(image_path)} - {str(e)}"
+            logger.error(error_msg)
+            self.error.emit(error_msg)
+            # 批处理状态下不弹出错误提示，继续处理下一张
+    
+    def load_checkpoint(self):
+        """加载检查点文件"""
+        try:
+            with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
+                checkpoint_data = json.load(f)
+                self.processed_images = set(checkpoint_data.get('processed_images', []))
+            logger.info(f"加载检查点，已处理 {len(self.processed_images)} 张图片")
+        except Exception as e:
+            logger.error(f"加载检查点失败: {str(e)}")
+    
+    def update_checkpoint(self):
+        """更新检查点文件"""
+        try:
+            checkpoint_dir = os.path.dirname(self.checkpoint_file)
+            if not os.path.exists(checkpoint_dir):
+                os.makedirs(checkpoint_dir)
+                
+            checkpoint_data = {
+                'processed_images': list(self.processed_images),
+                'last_update': datetime.datetime.now().isoformat()
+            }
+            
+            with open(self.checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump(checkpoint_data, f, ensure_ascii=False, indent=2)
+                
+        except Exception as e:
+            logger.error(f"更新检查点失败: {str(e)}")
+    
+    def stop(self):
+        """停止批处理"""
+        self.is_running = False
+
 class AnomalyDetectionWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.image_path = None  # 存储上传的图片路径
         self.current_results = None  # 当前处理结果文件路径
         self.processing_thread = None  # 处理线程
+        self.batch_thread = None  # 批处理线程
+        self.is_batch_processing = False  # 批处理状态
         
         self.init_ui()
         self.setup_logging()
@@ -107,6 +373,9 @@ class AnomalyDetectionWidget(QWidget):
         title_label.setAlignment(Qt.AlignCenter)
         upload_layout.addWidget(title_label)
         
+        # 按钮行布局 - 选择图片和清空图片在同一行
+        button_row_layout = QHBoxLayout()
+        
         # 上传按钮
         self.upload_btn = QPushButton("选择图片")
         self.upload_btn.clicked.connect(self.select_image)
@@ -127,7 +396,31 @@ class AnomalyDetectionWidget(QWidget):
                 background-color: #3d8b40;
             }
         """)
-        upload_layout.addWidget(self.upload_btn)
+        button_row_layout.addWidget(self.upload_btn)
+        
+        # 清空按钮
+        self.clear_btn = QPushButton("清空图片")
+        self.clear_btn.clicked.connect(self.clear_image)
+        self.clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #f44336;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #da190b;
+            }
+            QPushButton:pressed {
+                background-color: #c1170a;
+            }
+        """)
+        button_row_layout.addWidget(self.clear_btn)
+        
+        upload_layout.addLayout(button_row_layout)
         
         # 当前图片显示区域
         image_info_frame = QFrame()
@@ -155,28 +448,6 @@ class AnomalyDetectionWidget(QWidget):
         image_info_frame.setMaximumHeight(120)
         image_info_frame.setMinimumHeight(80)
         upload_layout.addWidget(image_info_frame)
-        
-        # 清空按钮
-        self.clear_btn = QPushButton("清空图片")
-        self.clear_btn.clicked.connect(self.clear_image)
-        self.clear_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #f44336;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 4px;
-                font-weight: bold;
-                font-size: 11px;
-            }
-            QPushButton:hover {
-                background-color: #da190b;
-            }
-            QPushButton:pressed {
-                background-color: #c1170a;
-            }
-        """)
-        upload_layout.addWidget(self.clear_btn)
         
         # 处理按钮
         self.process_btn = QPushButton("开始处理")
@@ -209,6 +480,87 @@ class AnomalyDetectionWidget(QWidget):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         upload_layout.addWidget(self.progress_bar)
+        
+        # 批处理按钮区域
+        batch_frame = QFrame()
+        batch_frame.setFrameStyle(QFrame.StyledPanel)
+        batch_frame.setStyleSheet("""
+            QFrame {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: #f8f9fa;
+                padding: 5px;
+            }
+        """)
+        batch_layout = QVBoxLayout(batch_frame)
+        batch_layout.setContentsMargins(10, 10, 10, 10)
+        
+        batch_title = QLabel("在线批处理")
+        batch_title.setFont(QFont("Arial", 10, QFont.Bold))
+        batch_layout.addWidget(batch_title)
+        
+        # 批处理按钮行布局 - 启动和停止按钮在同一行
+        batch_button_row_layout = QHBoxLayout()
+        
+        # 启动批处理按钮
+        self.start_batch_btn = QPushButton("启动在线批处理")
+        self.start_batch_btn.clicked.connect(self.start_batch_processing)
+        self.start_batch_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #9C27B0;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #7B1FA2;
+            }
+            QPushButton:pressed {
+                background-color: #6A1B9A;
+            }
+        """)
+        batch_button_row_layout.addWidget(self.start_batch_btn)
+        
+        # 终止批处理按钮
+        self.stop_batch_btn = QPushButton("终止在线批处理")
+        self.stop_batch_btn.clicked.connect(self.stop_batch_processing)
+        self.stop_batch_btn.setEnabled(False)
+        self.stop_batch_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5722;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover:enabled {
+                background-color: #E64A19;
+            }
+            QPushButton:pressed:enabled {
+                background-color: #D84315;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        batch_button_row_layout.addWidget(self.stop_batch_btn)
+        
+        batch_layout.addLayout(batch_button_row_layout)
+        
+        # 批处理状态显示
+        self.batch_status_label = QLabel("批处理状态: 未启动")
+        self.batch_status_label.setStyleSheet("color: gray; font-size: 10px;")
+        batch_layout.addWidget(self.batch_status_label)
+        
+        batch_frame.setMaximumHeight(150)
+        batch_frame.setMinimumHeight(120)
+        upload_layout.addWidget(batch_frame)
         
         # 图片预览区域
         preview_frame = QFrame()
@@ -418,6 +770,120 @@ class AnomalyDetectionWidget(QWidget):
         
         # 记录启动信息
         logger.info("异常检测系统启动")
+        
+    def start_batch_processing(self):
+        """启动在线批处理"""
+        try:
+            # 检查环境变量
+            load_dotenv()
+            processing_dir = os.getenv('ONLINE_PROCESSING_AD_DIR')
+            if not processing_dir:
+                QMessageBox.warning(self, "配置错误", "未找到ONLINE_PROCESSING_AD_DIR环境变量")
+                return
+                
+            # 检查文件夹是否存在
+            if not os.path.exists(processing_dir):
+                QMessageBox.warning(self, "文件夹不存在", f"指定的监控文件夹不存在: {processing_dir}")
+                return
+            
+            # 检查检查点文件
+            checkpoint_dir = "temp/batch_processing_checkpoint"
+            checkpoint_files = []
+            if os.path.exists(checkpoint_dir):
+                checkpoint_files = [f for f in os.listdir(checkpoint_dir) if f.endswith('.json')]
+            
+            checkpoint_file = None
+            if checkpoint_files:
+                # 使用新的检查点选择对话框
+                dialog = CheckpointSelectionDialog(checkpoint_files, checkpoint_dir, self)
+                result = dialog.exec_()
+                
+                if result == QDialog.Accepted:
+                    if dialog.selected_checkpoint is None:
+                        # 创建新的检查点文件
+                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        checkpoint_file = os.path.join(checkpoint_dir, f"{timestamp}.json")
+                        logger.info(f"创建新的检查点文件: {checkpoint_file}")
+                    else:
+                        # 使用选中的检查点文件
+                        checkpoint_file = dialog.selected_checkpoint
+                        logger.info(f"使用选中的检查点文件: {checkpoint_file}")
+                else:
+                    return  # 用户取消
+            else:
+                # 创建新的检查点文件
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                checkpoint_file = os.path.join(checkpoint_dir, f"{timestamp}.json")
+                logger.info(f"创建新的检查点文件: {checkpoint_file}")
+            
+            # 启动批处理线程
+            self.batch_thread = BatchProcessingThread(processing_dir, checkpoint_file)
+            self.batch_thread.progress.connect(self.on_batch_progress)
+            self.batch_thread.error.connect(self.on_batch_error)
+            self.batch_thread.batch_finished.connect(self.on_batch_finished)
+            self.batch_thread.image_processed.connect(self.on_batch_image_processed)
+            self.batch_thread.start()
+            
+            # 更新界面状态
+            self.is_batch_processing = True
+            self.start_batch_btn.setEnabled(False)
+            self.stop_batch_btn.setEnabled(True)
+            self.batch_status_label.setText("批处理状态: 运行中")
+            self.batch_status_label.setStyleSheet("color: green; font-size: 10px;")
+            
+            logger.info(f"在线批处理已启动，监控文件夹: {processing_dir}")
+            
+        except Exception as e:
+            error_msg = f"启动批处理失败: {str(e)}"
+            logger.error(error_msg)
+            QMessageBox.critical(self, "启动失败", error_msg)
+    
+    def stop_batch_processing(self):
+        """停止在线批处理"""
+        if self.batch_thread and self.batch_thread.isRunning():
+            self.batch_thread.stop()
+            logger.info("正在停止批处理...")
+            
+            # 更新界面状态
+            self.start_batch_btn.setEnabled(True)
+            self.stop_batch_btn.setEnabled(False)
+            self.batch_status_label.setText("批处理状态: 正在停止...")
+            self.batch_status_label.setStyleSheet("color: orange; font-size: 10px;")
+    
+    def on_batch_progress(self, progress_msg):
+        """批处理进度回调"""
+        logger.info(progress_msg)
+    
+    def on_batch_error(self, error_msg):
+        """批处理错误回调"""
+        logger.error(error_msg)
+        # 批处理状态下不弹出错误提示，只记录日志
+    
+    def on_batch_finished(self):
+        """批处理完成回调"""
+        self.is_batch_processing = False
+        self.start_batch_btn.setEnabled(True)
+        self.stop_batch_btn.setEnabled(False)
+        self.batch_status_label.setText("批处理状态: 已停止")
+        self.batch_status_label.setStyleSheet("color: gray; font-size: 10px;")
+        logger.info("批处理已停止")
+    
+    def on_batch_image_processed(self, prediction_path, heatmap_path, json_path):
+        """批处理图片处理完成回调"""
+        # 保存结果路径
+        self.current_results = {
+            'prediction': prediction_path,
+            'heatmap': heatmap_path,
+            'json': json_path
+        }
+        
+        # 显示结果
+        self.display_results()
+        
+        logger.info(f"批处理图片处理完成")
+        logger.info(f"预测结果: {prediction_path}")
+        logger.info(f"热力图: {heatmap_path}")
+        logger.info(f"JSON结果: {json_path}")
         
     def select_image(self):
         """选择图片文件"""
