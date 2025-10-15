@@ -4,6 +4,7 @@ import os
 import paramiko
 import time
 import logging
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -64,14 +65,12 @@ class SSHClient:
         except Exception as e:
             logger.error(f"关闭SSH连接时出错: {str(e)}")
 
-    def transfer_images_from_directory(self, dir_path: str, process_id: str) -> str:
+    def transfer_images_from_directory(self, dir_path: str) -> str:
         """
         将指定本地文件夹下的所有文件传输到远程服务器以process_id命名的子文件夹中。
 
         Args:
             dir_path (str): 本地存放图片的文件夹路径。
-            process_id (str): 唯一的处理ID，将作为远程服务器上的子文件夹名称。
-
         Returns:
             str: 成功上传后，远程文件夹的完整路径。如果传输失败，则返回 None。
         """
@@ -127,7 +126,7 @@ class SSHClient:
             logger.error(f"文件传输过程中发生错误: {e}")
             return None
         
-    def download_result(self) -> str:
+    def download_result(self,dir_path:str) -> str:
         """
         从服务器下载结果文件
         Returns:
@@ -151,6 +150,9 @@ class SSHClient:
 
         # 下载结果可视化文件
         try:
+            # 复制原图文件夹到结果目录
+            shutil.copytree(dir_path, os.path.join(local_result_dir, 'original_images'), dirs_exist_ok=True)
+            logger.info(f"成功复制原图文件夹到结果目录: {os.path.join(local_result_dir, 'original_images')}")
             self.sftp.get(remotepath=remote_result, localpath=local_result_file)
             self.sftp.get(remotepath=remote_result_json, localpath=local_result_json)
             logger.info(f"成功下载结果文件: {local_result_file}")
@@ -179,7 +181,7 @@ class SSHClient:
             self.connect()
 
             # 上传图片
-            remote_target_dir = self.transfer_images_from_directory(dir_path, self.process_id)
+            remote_target_dir = self.transfer_images_from_directory(dir_path)
 
             # 执行Python命令,首先进入工作目录并激活conda环境
             cmd = f'''bash -c 'cd {self.remote_base_path} && \
@@ -207,7 +209,7 @@ class SSHClient:
                 raise Exception("处理超时")
             else:
                 # 下载结果文件
-                pred_file_path, local_result_json = self.download_result()
+                pred_file_path, local_result_json = self.download_result(dir_path=dir_path)
                 
                 return pred_file_path, local_result_json
         except Exception as e:

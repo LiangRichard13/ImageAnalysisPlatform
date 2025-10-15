@@ -4,7 +4,7 @@ import os
 import paramiko
 import time
 import logging
-import json
+import shutil
 
 logger = logging.getLogger(__name__)
 
@@ -65,14 +65,12 @@ class SSHClient:
         except Exception as e:
             logger.error(f"关闭SSH连接时出错: {str(e)}")
 
-    def transfer_single_image_file(self, file_path: str, process_id: str) -> str:
+    def transfer_single_image_file(self, file_path: str) -> str:
         """
         将指定的单张图片文件传输到远程服务器，并以 process_id.{文件后缀} 进行保存。
 
         Args:
             file_path (str): 本地图片文件的完整路径。
-            process_id (str): 唯一的处理ID，将作为远程服务器上保存的文件名。
-
         Returns:
             str: 成功上传后，远程文件的完整路径。如果传输失败，则返回 None。
         """
@@ -85,7 +83,7 @@ class SSHClient:
         
         # 拼接远程文件的完整路径
         # 使用 os.path.join 确保路径拼接的正确性，然后替换为URL风格的斜杠'/'
-        remote_file_name = f"{process_id}{file_extension}"
+        remote_file_name = f"{self.process_id}{file_extension}"
         remote_file_path = os.path.join(self.remote_image_path, remote_file_name).replace('\\', '/')
         logging.info(f"目标远程文件路径: {remote_file_path}")
 
@@ -101,7 +99,7 @@ class SSHClient:
             logging.error(f"文件传输过程中发生错误: {e}")
             return None
         
-    def download_result(self) -> str:
+    def download_result(self,image_path:str) -> str:
         """
         从服务器下载结果文件
         Returns:
@@ -126,9 +124,12 @@ class SSHClient:
         logger.info(f"准备下载文件: {remote_result_pre_image} -> {local_result_pre_image}")
         logger.info(f"准备下载文件: {remote_result_heat_map} -> {local_result_heat_map}")
         logger.info(f"准备下载文件: {remote_result_json} -> {local_result_json}")
-
-        # 下载结果可视化文件
         try:
+            # 下载结果可视化文件
+            # 将原图复制到结果目录
+            shutil.copy(image_path, os.path.join(local_result_dir, 'original.png'))
+            logger.info(f"成功复制原图到结果目录: {os.path.join(local_result_dir, 'original.png')}")
+
             self.sftp.get(remotepath=remote_result_pre_image, localpath=local_result_pre_image)
             self.sftp.get(remotepath=remote_result_heat_map, localpath=local_result_heat_map)
             self.sftp.get(remotepath=remote_result_json, localpath=local_result_json)
@@ -161,7 +162,7 @@ class SSHClient:
             self.connect()
 
             # 上传图片
-            remote_target_dir = self.transfer_single_image_file(image_path, self.process_id)
+            remote_target_dir = self.transfer_single_image_file(image_path)
 
             # 判断图片类型并选择相应的脚本
             is_long = self.is_long_image(image_path)
@@ -194,7 +195,7 @@ class SSHClient:
                 raise Exception("处理超时")
             else:
                 # 下载结果文件
-                local_result_pre_image, local_result_heat_map, local_result_json = self.download_result()
+                local_result_pre_image, local_result_heat_map, local_result_json = self.download_result(image_path=image_path)
                 
                 return local_result_pre_image, local_result_heat_map, local_result_json
         except Exception as e:
