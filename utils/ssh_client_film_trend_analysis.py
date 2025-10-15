@@ -21,7 +21,7 @@ class SSHClient:
         self.remote_result_dir_path = os.path.join(self.remote_base_path,'output',self.process_id).replace('\\', '/')
         self.conda_executable = os.getenv('CONDA_EXECUTABLE_TREND_ANALYSIS')
         self.conda_env_name = os.getenv('CONDA_ENV_NAME_TREND_ANALYSIS')
-        self.local_download_dir = "download"
+        self.local_download_dir = "download/trend_analysis"
 
     def connect(self):
         """建立SSH连接"""
