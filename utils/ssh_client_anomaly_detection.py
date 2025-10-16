@@ -127,8 +127,9 @@ class SSHClient:
         try:
             # 下载结果可视化文件
             # 将原图复制到结果目录
-            shutil.copy(image_path, os.path.join(local_result_dir, 'original.png'))
-            logger.info(f"成功复制原图到结果目录: {os.path.join(local_result_dir, 'original.png')}")
+            image_filename = os.path.basename(image_path)
+            shutil.copy(image_path, os.path.join(local_result_dir, image_filename))
+            logger.info(f"成功复制原图到结果目录: {os.path.join(local_result_dir, image_filename)}")
 
             self.sftp.get(remotepath=remote_result_pre_image, localpath=local_result_pre_image)
             self.sftp.get(remotepath=remote_result_heat_map, localpath=local_result_heat_map)
@@ -165,9 +166,14 @@ class SSHClient:
             remote_target_dir = self.transfer_single_image_file(image_path)
 
             # 判断图片类型并选择相应的脚本
-            is_long = self.is_long_image(image_path)
-            script_name = "api_v2.py" if is_long else "api.py"
-            logger.info(f"图片类型判断: {'长图' if is_long else '普通图'}, 使用脚本: {script_name}")
+            image_type = self.image_type_judge(image_path)
+            if image_type == "square":
+                script_name = "api.py"
+            elif image_type == "very long":
+                script_name = "api_v2.py"
+            else:
+                script_name = "api_v3.py"
+            logger.info(f"图片类型判断: {image_type}, 使用脚本: {script_name}")
 
             # 执行Python命令,首先进入工作目录并激活conda环境
             cmd = f'''bash -c 'cd {self.remote_base_path} && \
@@ -233,26 +239,36 @@ class SSHClient:
                 time.sleep(3)
                 continue
 
-    def is_long_image(self, image_path: str) -> bool:
+    def image_type_judge(self, image_path: str) -> str:
         """
-        判断图片是否为长图（基于宽高比）
+        判断图片类型并返回对应的API脚本类型
         Args:
             image_path: 图片文件路径
         Returns:
-            bool: 是否为长图
+            str: 图片类型标识 - "square"（方形）、"special"（特殊尺寸）、"other"（其他）
         """
         try:
             from PIL import Image
             with Image.open(image_path) as img:
-                length, width = img.size
-                # 如果长度大于宽度的2倍，则认为是长图
-                is_long = length / width > 2.0
-                logger.info(f"图片尺寸: {length}x{width}, 是否为长图: {is_long}")
-                return is_long
+                width, height = img.size
+                
+                # 判断是否为方形图片（宽高比接近1:1）
+                ratio = width / height
+                if 0.9 <= ratio <= 1.1:
+                    image_type = "square"
+                # 判断是否为特殊尺寸 31901x1000
+                elif width == 31901 and height == 1000:
+                    image_type = "very long"
+                # 其他类型
+                else:
+                    image_type = "other"
+                
+                logger.info(f"图片尺寸: {width}x{height}, 图片类型: {image_type}")
+                return image_type
         except Exception as e:
             logger.error(f"判断图片类型失败: {str(e)}")
-            # 如果无法判断，默认使用 api_v2.py（保持原有行为）
-            return False
+            # 如果无法判断，默认使用 api_v3.py
+            return "other"
 
     def get_process_id(self)->str:
         """
