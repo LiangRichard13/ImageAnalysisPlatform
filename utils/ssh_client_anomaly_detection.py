@@ -170,9 +170,9 @@ class SSHClient:
             if image_type == "square":
                 script_name = "api.py"
             elif image_type == "very long":
-                script_name = "api_v2.py"
+                script_name = "api_v2_http.py"
             else:
-                script_name = "api_v3.py"
+                script_name = "api_v3_http.py"
             logger.info(f"图片类型判断: {image_type}, 使用脚本: {script_name}")
 
             # 执行Python命令,首先进入工作目录并激活conda环境
