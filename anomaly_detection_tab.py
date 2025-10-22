@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QDialog, QListWidget, QListWidgetItem, QDialogButtonBox)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject
 from PyQt5.QtGui import QPixmap, QFont
-from utils.ssh_client_anomaly_detection import SSHClient
+from utils.ssh_client_anomaly_detection import SSHClient, SSHBatchDownload
 from dotenv import load_dotenv
 import tempfile
 import shutil
@@ -170,6 +170,141 @@ class CheckpointSelectionDialog(QDialog):
         """创建新检查点"""
         self.selected_checkpoint = None  # None表示创建新检查点
         self.accept()
+
+class BatchDownloadSelectionDialog(QDialog):
+    """批量下载选择对话框"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.selected_files = []
+        self.init_ui()
+        
+    def init_ui(self):
+        """初始化对话框界面"""
+        self.setWindowTitle("选择批量下载文件")
+        self.setModal(True)
+        self.resize(700, 500)
+        
+        layout = QVBoxLayout(self)
+        
+        # 标题和说明
+        title_label = QLabel("请选择要下载的批处理结果文件：")
+        title_label.setFont(QFont("Arial", 12, QFont.Bold))
+        layout.addWidget(title_label)
+        
+        info_label = QLabel("选择检查点文件或连续异常记录文件进行批量下载。")
+        info_label.setStyleSheet("color: gray; font-size: 10px;")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+        
+        # 创建标签页
+        self.tab_widget = QTabWidget()
+        layout.addWidget(self.tab_widget)
+        
+        # 检查点文件标签页
+        self.checkpoint_tab = QWidget()
+        self.checkpoint_layout = QVBoxLayout(self.checkpoint_tab)
+        self.checkpoint_list = QListWidget()
+        self.checkpoint_list.setSelectionMode(QListWidget.MultiSelection)
+        self.checkpoint_layout.addWidget(self.checkpoint_list)
+        self.tab_widget.addTab(self.checkpoint_tab, "检查点文件")
+        
+        # 连续异常文件标签页
+        self.anomaly_tab = QWidget()
+        self.anomaly_layout = QVBoxLayout(self.anomaly_tab)
+        self.anomaly_list = QListWidget()
+        self.anomaly_list.setSelectionMode(QListWidget.MultiSelection)
+        self.anomaly_layout.addWidget(self.anomaly_list)
+        self.tab_widget.addTab(self.anomaly_tab, "连续异常文件")
+        
+        # 加载文件信息
+        self.load_file_info()
+        
+        # 按钮区域
+        button_layout = QHBoxLayout()
+        
+        self.download_btn = QPushButton("开始下载")
+        self.download_btn.clicked.connect(self.start_download)
+        self.download_btn.setEnabled(False)
+        button_layout.addWidget(self.download_btn)
+        
+        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(self.cancel_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # 连接选择变化信号
+        self.checkpoint_list.itemSelectionChanged.connect(self.on_selection_changed)
+        self.anomaly_list.itemSelectionChanged.connect(self.on_selection_changed)
+        
+    def load_file_info(self):
+        """加载文件信息"""
+        # 加载检查点文件
+        checkpoint_dir = "temp/batch_processing_checkpoint"
+        if os.path.exists(checkpoint_dir):
+            checkpoint_files = [f for f in os.listdir(checkpoint_dir) if f.endswith('.json')]
+            for checkpoint_file in checkpoint_files:
+                file_path = os.path.join(checkpoint_dir, checkpoint_file)
+                self.add_file_to_list(self.checkpoint_list, file_path, checkpoint_file, "检查点")
+        
+        # 加载连续异常文件
+        anomaly_dir = "temp/consecutive_anomalies"
+        if os.path.exists(anomaly_dir):
+            anomaly_files = [f for f in os.listdir(anomaly_dir) if f.endswith('.json')]
+            for anomaly_file in anomaly_files:
+                file_path = os.path.join(anomaly_dir, anomaly_file)
+                self.add_file_to_list(self.anomaly_list, file_path, anomaly_file, "连续异常")
+    
+    def add_file_to_list(self, list_widget, file_path, filename, file_type):
+        """添加文件到列表"""
+        try:
+            # 解析文件名中的时间戳
+            timestamp_str = filename.replace('.json', '')
+            try:
+                create_time = datetime.datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S")
+                create_time_str = create_time.strftime("%Y-%m-%d %H:%M:%S")
+            except:
+                create_time_str = "未知时间"
+            
+            # 读取文件信息
+            processed_count = 0
+            if os.path.exists(file_path):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    file_data = json.load(f)
+                    processed_count = len(file_data.get('processed_images', []))
+            
+            # 创建列表项
+            item_text = f"{filename}\n创建时间: {create_time_str} | 类型: {file_type} | 图片数量: {processed_count}"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, file_path)
+            list_widget.addItem(item)
+            
+        except Exception as e:
+            logger.error(f"加载文件信息失败 {filename}: {str(e)}")
+            item = QListWidgetItem(f"{filename} (加载失败)")
+            item.setData(Qt.UserRole, file_path)
+            list_widget.addItem(item)
+    
+    def on_selection_changed(self):
+        """选择变化回调"""
+        checkpoint_selected = len(self.checkpoint_list.selectedItems()) > 0
+        anomaly_selected = len(self.anomaly_list.selectedItems()) > 0
+        self.download_btn.setEnabled(checkpoint_selected or anomaly_selected)
+    
+    def start_download(self):
+        """开始下载"""
+        self.selected_files = []
+        
+        # 获取选中的检查点文件
+        for item in self.checkpoint_list.selectedItems():
+            self.selected_files.append(item.data(Qt.UserRole))
+        
+        # 获取选中的异常文件
+        for item in self.anomaly_list.selectedItems():
+            self.selected_files.append(item.data(Qt.UserRole))
+        
+        if self.selected_files:
+            self.accept()
 
 class BatchProcessingThread(QThread):
     """批处理线程"""
@@ -453,6 +588,141 @@ class BatchProcessingThread(QThread):
             super().terminate()
             logger.info("强制终止批处理线程")
 
+class BatchDownloadThread(QThread):
+    """批量下载线程"""
+    progress = pyqtSignal(str)            # 进度信号
+    error = pyqtSignal(str)               # 错误信号
+    download_finished = pyqtSignal()      # 下载完成信号
+    download_progress = pyqtSignal(int, int)  # 下载进度信号（当前进度，总数量）
+    
+    def __init__(self, selected_files):
+        super().__init__()
+        self.selected_files = selected_files
+        self.is_running = True
+        self.process_ids = []
+        
+    def run(self):
+        try:
+            logger.info(f"批量下载启动，共 {len(self.selected_files)} 个文件")
+            
+            # 从选中的文件中提取process_ids
+            self.extract_process_ids()
+            
+            if not self.process_ids:
+                self.error.emit("未找到有效的处理ID")
+                return
+            
+            logger.info(f"提取到 {len(self.process_ids)} 个处理ID")
+            self.progress.emit(f"开始批量下载，共 {len(self.process_ids)} 个处理结果")
+            
+            # 创建SSHBatchDownload实例
+            ssh_download = SSHBatchDownload()
+            
+            # 连接服务器
+            ssh_download.connect()
+            
+            # 批量下载结果文件
+            total_files = len(self.process_ids)
+            for i, process_id in enumerate(self.process_ids):
+                if not self.is_running:
+                    logger.info("批量下载被中断")
+                    break
+                
+                try:
+                    # 下载单个处理结果
+                    self.download_single_result(ssh_download, process_id)
+                    
+                    # 更新进度
+                    current_progress = i + 1
+                    self.download_progress.emit(current_progress, total_files)
+                    self.progress.emit(f"下载进度: {current_progress}/{total_files} - {process_id}")
+                    
+                except Exception as e:
+                    error_msg = f"下载失败 {process_id}: {str(e)}"
+                    logger.error(error_msg)
+                    self.error.emit(error_msg)
+                    continue
+            
+            # 关闭连接
+            ssh_download.close()
+            
+            if self.is_running:
+                logger.info("批量下载完成")
+                self.progress.emit("批量下载完成")
+            else:
+                logger.info("批量下载被中断")
+                self.progress.emit("批量下载被中断")
+            
+            # 无论正常完成还是被中断，都通知UI完成，以便重置界面
+            self.download_finished.emit()
+            
+        except Exception as e:
+            error_msg = f"批量下载线程异常: {str(e)}"
+            logger.error(error_msg)
+            self.error.emit(error_msg)
+    
+    def extract_process_ids(self):
+        """从选中的文件中提取process_ids"""
+        self.process_ids = []
+        
+        for file_path in self.selected_files:
+            try:
+                if os.path.exists(file_path):
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        file_data = json.load(f)
+                    
+                    # 从文件中提取process_ids
+                    processed_images = file_data.get('processed_images', [])
+                    for image_info in processed_images:
+                        process_id = image_info.get('process_id')
+                        if process_id and process_id not in self.process_ids:
+                            self.process_ids.append(process_id)
+                            
+            except Exception as e:
+                logger.error(f"提取process_ids失败 {file_path}: {str(e)}")
+                continue
+    
+    def download_single_result(self, ssh_download, process_id):
+        """下载单个处理结果"""
+        try:
+            # 本地下载地址
+            local_result_dir = os.path.join(ssh_download.local_download_dir, process_id)
+            local_result_pre_image = os.path.join(local_result_dir, 'prediction.png')
+            local_result_heat_map = os.path.join(local_result_dir, 'heat_map.png')
+            
+            # 远程结果文件路径
+            remote_result_pre_image = os.path.join(ssh_download.remote_result_dir_path, process_id, f"{process_id}.png").replace('\\', '/')
+            remote_result_heat_map = os.path.join(ssh_download.remote_result_dir_path, process_id, f"{process_id}_heatmap.png").replace('\\', '/')
+            
+            # 确保本地目录存在
+            if not os.path.exists(local_result_dir):
+                os.makedirs(local_result_dir)
+            
+            # 下载预测图
+            if not os.path.exists(local_result_pre_image):
+                ssh_download.sftp.get(remotepath=remote_result_pre_image, localpath=local_result_pre_image)
+                logger.info(f"成功下载预测图: {local_result_pre_image}")
+            
+            # 下载热力图
+            if not os.path.exists(local_result_heat_map):
+                ssh_download.sftp.get(remotepath=remote_result_heat_map, localpath=local_result_heat_map)
+                logger.info(f"成功下载热力图: {local_result_heat_map}")
+            
+        except Exception as e:
+            logger.error(f"下载单个结果失败 {process_id}: {str(e)}")
+            raise e
+    
+    def stop(self):
+        """停止下载"""
+        self.is_running = False
+    
+    def terminate(self):
+        """强制终止下载线程"""
+        self.is_running = False
+        if self.isRunning():
+            super().terminate()
+            logger.info("强制终止批量下载线程")
+
 class AnomalyDetectionWidget(QWidget):
     def __init__(self):
         super().__init__()
@@ -461,6 +731,8 @@ class AnomalyDetectionWidget(QWidget):
         self.processing_thread = None  # 处理线程
         self.batch_thread = None  # 批处理线程
         self.is_batch_processing = False  # 批处理状态
+        self.download_thread = None  # 下载线程
+        self.is_downloading = False  # 下载状态
         
         self.init_ui()
         self.setup_logging()
@@ -708,6 +980,89 @@ class AnomalyDetectionWidget(QWidget):
         batch_frame.setMaximumHeight(150)
         batch_frame.setMinimumHeight(120)
         upload_layout.addWidget(batch_frame)
+        
+        # 批量下载按钮区域
+        download_frame = QFrame()
+        download_frame.setFrameStyle(QFrame.StyledPanel)
+        download_frame.setStyleSheet("""
+            QFrame {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background-color: #f8f9fa;
+                padding: 5px;
+            }
+        """)
+        download_layout = QVBoxLayout(download_frame)
+        download_layout.setContentsMargins(10, 10, 10, 10)
+        
+        download_title = QLabel("批量下载结果")
+        download_title.setFont(QFont("Arial", 10, QFont.Bold))
+        download_layout.addWidget(download_title)
+        
+        # 下载按钮行布局 - 下载和终止按钮在同一行
+        download_button_row_layout = QHBoxLayout()
+        
+        # 下载批处理结果按钮
+        self.start_download_btn = QPushButton("下载批处理结果")
+        self.start_download_btn.clicked.connect(self.start_batch_download)
+        self.start_download_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+        """)
+        download_button_row_layout.addWidget(self.start_download_btn)
+        
+        # 强制终止下载按钮
+        self.stop_download_btn = QPushButton("强制终止下载")
+        self.stop_download_btn.clicked.connect(self.stop_batch_download)
+        self.stop_download_btn.setEnabled(False)
+        self.stop_download_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF5722;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+            QPushButton:hover:enabled {
+                background-color: #E64A19;
+            }
+            QPushButton:pressed:enabled {
+                background-color: #D84315;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        download_button_row_layout.addWidget(self.stop_download_btn)
+        
+        download_layout.addLayout(download_button_row_layout)
+        
+        # 下载状态显示
+        self.download_status_label = QLabel("下载状态: 未启动")
+        self.download_status_label.setStyleSheet("color: gray; font-size: 10px;")
+        download_layout.addWidget(self.download_status_label)
+        
+        # 移除下载进度条，改为仅在状态文字中显示数值进度
+        
+        download_frame.setMaximumHeight(150)
+        download_frame.setMinimumHeight(120)
+        upload_layout.addWidget(download_frame)
         
         # 图片预览区域
         preview_frame = QFrame()
@@ -1102,6 +1457,89 @@ class AnomalyDetectionWidget(QWidget):
                 
         except Exception as e:
             logger.error(f"处理连续异常检测回调失败: {str(e)}")
+    
+    def start_batch_download(self):
+        """启动批量下载"""
+        try:
+            # 打开批量下载选择对话框
+            dialog = BatchDownloadSelectionDialog(self)
+            result = dialog.exec_()
+            
+            if result == QDialog.Accepted and dialog.selected_files:
+                # 启动下载线程
+                self.download_thread = BatchDownloadThread(dialog.selected_files)
+                self.download_thread.progress.connect(self.on_download_progress)
+                self.download_thread.error.connect(self.on_download_error)
+                self.download_thread.download_finished.connect(self.on_download_finished)
+                self.download_thread.download_progress.connect(self.on_download_progress_update)
+                self.download_thread.start()
+                
+                # 更新界面状态
+                self.is_downloading = True
+                self.start_download_btn.setEnabled(False)
+                self.stop_download_btn.setEnabled(True)
+                self.download_status_label.setText("下载状态: 运行中")
+                self.download_status_label.setStyleSheet("color: green; font-size: 10px;")
+                # 仅通过状态文字显示数值进度
+                
+                logger.info(f"批量下载已启动，共 {len(dialog.selected_files)} 个文件")
+            else:
+                logger.info("批量下载已取消")
+                
+        except Exception as e:
+            error_msg = f"启动批量下载失败: {str(e)}"
+            logger.error(error_msg)
+            QMessageBox.critical(self, "启动失败", error_msg)
+    
+    def stop_batch_download(self):
+        """停止批量下载"""
+        if self.download_thread and self.download_thread.isRunning():
+            self.download_thread.stop()
+            logger.info("正在停止批量下载...")
+            
+            # 更新界面状态 - 停止过程中禁用两个按钮
+            self.start_download_btn.setEnabled(False)
+            self.stop_download_btn.setEnabled(False)
+            self.download_status_label.setText("下载状态: 正在停止...")
+            self.download_status_label.setStyleSheet("color: orange; font-size: 10px;")
+            
+            # 设置超时检查，如果10秒后线程仍在运行，强制终止
+            QTimer.singleShot(10000, self.check_download_thread_timeout)
+    
+    def check_download_thread_timeout(self):
+        """检查下载线程超时，如果仍在运行则强制终止"""
+        if self.download_thread and self.download_thread.isRunning():
+            logger.warning("下载线程超时未停止，强制终止")
+            self.download_thread.terminate()
+            self.on_download_finished()  # 手动调用完成回调
+    
+    def on_download_progress(self, progress_msg):
+        """下载进度回调"""
+        logger.info(progress_msg)
+    
+    def on_download_error(self, error_msg):
+        """下载错误回调"""
+        logger.error(error_msg)
+        # 下载状态下不弹出错误提示，只记录日志
+    
+    def on_download_finished(self):
+        """下载完成回调"""
+        self.is_downloading = False
+        self.start_download_btn.setEnabled(True)
+        self.stop_download_btn.setEnabled(False)
+        self.download_status_label.setText("下载状态: 已停止")
+        self.download_status_label.setStyleSheet("color: gray; font-size: 10px;")
+        # 保持仅文字显示
+        logger.info("批量下载已停止")
+    
+    def on_download_progress_update(self, current, total):
+        """下载进度更新回调"""
+        if total > 0:
+            progress_percent = int((current / total) * 100)
+            progress_text = f"当前下载进度 {current}/{total} ({progress_percent}%)"
+            self.download_status_label.setText(f"下载状态: 运行中 | {progress_text}")
+        else:
+            self.download_status_label.setText("下载状态: 运行中")
         
     def select_image(self):
         """选择图片文件"""

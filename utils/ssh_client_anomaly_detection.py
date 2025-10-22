@@ -304,6 +304,65 @@ class SSHClient:
             str: 处理ID
         """
         return FileNamer.generate_time_based_name()
+    
+class SSHBatchDownload(SSHClient):
+    def __init__(self):
+        # 加载环境变量
+        load_dotenv()
+        self.host = os.getenv('SSH_HOST_ANOMALY_DETECTION')
+        self.port = int(os.getenv('SSH_PORT_ANOMALY_DETECTION', 22)) # 默认端口为22
+        self.username = os.getenv('SSH_USERNAME_ANOMALY_DETECTION')
+        self.password = os.getenv('SSH_PASSWORD_ANOMALY_DETECTION')
+        self.remote_base_path = os.getenv('SSH_REMOTE_BASE_PATH_ANOMALY_DETECTION').replace('\\', '/')
+        self.remote_image_path = os.path.join(self.remote_base_path,'upload').replace('\\', '/')
+        self.remote_result_dir_path = os.path.join(self.remote_base_path,'output').replace('\\', '/')
+        self.conda_executable = os.getenv('CONDA_EXECUTABLE_ANOMALY_DETECTION')
+        self.conda_env_name = os.getenv('CONDA_ENV_NAME_ANOMALY_DETECTION')
+        self.local_download_dir = "download/anomaly_detection"
+
+    def download_results_batch(self,process_ids_list):
+        """
+        批量下载结果文件中的预测图和热力图。
+        Args:
+            process_ids_list: 处理ID列表
+        """
+        for i,process_id in enumerate(process_ids_list):
+            # 本地下载地址
+            local_result_dir = os.path.join(self.local_download_dir, process_id)
+            local_result_pre_image = os.path.join(local_result_dir, 'prediction.png')
+            local_result_heat_map = os.path.join(local_result_dir, 'heat_map.png')
+            # 远程结果文件路径
+            remote_result_pre_image = os.path.join(self.remote_result_dir_path,process_id,f"{process_id}.png").replace('\\', '/')
+            remote_result_heat_map = os.path.join(self.remote_result_dir_path,process_id,f"{process_id}_heatmap.png").replace('\\', '/')
+            # 日志输出
+            logger.info(f"准备下载文件: {remote_result_pre_image} -> {local_result_pre_image}")
+            logger.info(f"准备下载文件: {remote_result_heat_map} -> {local_result_heat_map}")
+            self.sftp.get(remotepath=remote_result_pre_image, localpath=local_result_pre_image)
+            try:
+                logger.info(f"下载进度: {i+1}/{len(process_ids_list)}")
+                self.sftp.get(remotepath=remote_result_heat_map, localpath=local_result_heat_map)
+                logger.info(f"成功下载结果文件: {local_result_pre_image}")
+                logger.info(f"成功下载结果文件: {local_result_heat_map}")
+            except Exception as e:
+                logger.error(f"下载结果失败: {e}")
+                continue
+    
+    def handle_batch_download(self,process_ids_list):
+        """
+        处理批量下载
+        Args:
+            process_ids_list: 处理ID列表
+        """
+        try:
+            # 连接服务器
+            self.connect()
+            # 批量下载结果文件
+            self.download_results_batch(process_ids_list)
+        except Exception as e:
+            logger.error(f"批量下载过程中出现错误: {e}")
+            raise e
+        finally:
+            self.close()
 
 if __name__ == "__main__":
     ssh_client = SSHClient()
