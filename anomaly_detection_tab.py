@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QSplitter, QPushButton, QLabel, 
@@ -177,6 +178,7 @@ class BatchProcessingThread(QThread):
     batch_finished = pyqtSignal()         # 批处理完成信号
     image_processed = pyqtSignal(str, str, str)  # 单张图片处理完成信号
     batch_progress = pyqtSignal(int, int) # 批处理进度信号（当前进度，总数量）
+    consecutive_anomaly_detected = pyqtSignal(list)  # 连续异常检测信号，传递异常图片列表
     
     def __init__(self, processing_dir, checkpoint_file=None):
         super().__init__()
@@ -187,6 +189,11 @@ class BatchProcessingThread(QThread):
         self.polling_interval = 5  # 轮询间隔5秒
         self.current_batch_images = []  # 当前批次的图片列表
         self.current_batch_processed = 0  # 当前批次已处理的图片数量
+        
+        # 连续异常检测相关变量
+        self.consecutive_anomalies_count = 0  # 连续异常计数器
+        self.anomaly_images_list = []  # 异常图片记录列表
+        self.anomalies_dir = "temp/consecutive_anomalies"  # 异常记录保存目录
         
     def run(self):
         try:
@@ -291,6 +298,9 @@ class BatchProcessingThread(QThread):
             logger.info(f"图片处理完成: {os.path.basename(image_path)} (process_id: {ssh_client.process_id})")
             self.progress.emit(f"图片处理完成: {os.path.basename(image_path)}")
             
+            # 检查是否为异常图片并更新连续异常计数
+            self.check_anomaly_and_update_count(image_path, ssh_client.process_id, local_result_json)
+            
             # 发送处理完成信号
             self.image_processed.emit(local_result_pre_image, local_result_heat_map, local_result_json)
             
@@ -353,6 +363,88 @@ class BatchProcessingThread(QThread):
     def stop(self):
         """停止批处理"""
         self.is_running = False
+    
+    def check_anomaly_and_update_count(self, image_path, process_id, json_path):
+        """检查是否为异常图片并更新连续异常计数"""
+        try:
+            if os.path.exists(json_path):
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+                
+                anomaly_level = json_data.get('anomaly_level', '')
+                
+                # 判断是否为异常图片（根据现有的异常级别判断逻辑）
+                if anomaly_level in ['中等异常可能性', '很可能异常']:
+                    # 异常图片，增加计数并记录
+                    self.consecutive_anomalies_count += 1
+                    
+                    # 记录异常图片信息
+                    anomaly_info = {
+                        'file_path': image_path,
+                        'process_id': process_id,
+                        'processed_time': datetime.datetime.now().isoformat()
+                    }
+                    self.anomaly_images_list.append(anomaly_info)
+                    
+                    logger.info(f"检测到异常图片: {os.path.basename(image_path)} (异常级别: {anomaly_level})")
+                    logger.info(f"连续异常计数: {self.consecutive_anomalies_count}")
+                    
+                    # 检查是否达到15次连续异常
+                    if self.consecutive_anomalies_count >= 15:
+                        self.handle_consecutive_anomalies()
+                else:
+                    # 正常图片，重置计数器
+                    if self.consecutive_anomalies_count > 0:
+                        logger.info(f"检测到正常图片，重置连续异常计数 (原计数: {self.consecutive_anomalies_count})")
+                    self.consecutive_anomalies_count = 0
+                    self.anomaly_images_list = []  # 清空异常记录列表
+                    
+        except Exception as e:
+            logger.error(f"检查异常图片失败: {str(e)}")
+    
+    def handle_consecutive_anomalies(self):
+        """处理连续15次异常的情况"""
+        try:
+            logger.warning(f"检测到连续 {self.consecutive_anomalies_count} 次异常，触发警告")
+            
+            # 发送信号通知主界面
+            self.consecutive_anomaly_detected.emit(self.anomaly_images_list)
+            
+            # 保存异常记录到文件
+            self.save_anomaly_record()
+            
+            # 重置计数器
+            self.consecutive_anomalies_count = 0
+            self.anomaly_images_list = []
+            
+        except Exception as e:
+            logger.error(f"处理连续异常失败: {str(e)}")
+    
+    def save_anomaly_record(self):
+        """保存异常记录到文件"""
+        try:
+            # 确保目录存在
+            if not os.path.exists(self.anomalies_dir):
+                os.makedirs(self.anomalies_dir)
+            
+            # 创建时间戳文件名
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            checkpoint_file = os.path.join(self.anomalies_dir, f"{timestamp}.json")
+            
+            # 准备保存的数据
+            anomaly_data = {
+                "processed_images": self.anomaly_images_list,
+                "last_update": datetime.datetime.now().isoformat()
+            }
+            
+            # 保存到文件
+            with open(checkpoint_file, 'w', encoding='utf-8') as f:
+                json.dump(anomaly_data, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"连续异常记录已保存: {checkpoint_file}")
+            
+        except Exception as e:
+            logger.error(f"保存异常记录失败: {str(e)}")
     
     def terminate(self):
         """强制终止批处理线程"""
@@ -878,6 +970,7 @@ class AnomalyDetectionWidget(QWidget):
             self.batch_thread.batch_finished.connect(self.on_batch_finished)
             self.batch_thread.image_processed.connect(self.on_batch_image_processed)
             self.batch_thread.batch_progress.connect(self.on_batch_progress_update)
+            self.batch_thread.consecutive_anomaly_detected.connect(self.on_consecutive_anomaly_detected)
             self.batch_thread.start()
             
             # 更新界面状态
@@ -958,6 +1051,57 @@ class AnomalyDetectionWidget(QWidget):
             self.batch_status_label.setText(f"批处理状态: 运行中 | {progress_text}")
         else:
             self.batch_status_label.setText("批处理状态: 运行中")
+    
+    def on_consecutive_anomaly_detected(self, anomaly_images_list):
+        """连续异常检测回调"""
+        try:
+            logger.warning(f"检测到连续15次异常，共{len(anomaly_images_list)}张异常图片")
+            
+            # 创建弹窗提示
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("连续异常检测警告")
+            msg_box.setText(f"检测到连续15次异常！")
+            msg_box.setInformativeText(f"共检测到 {len(anomaly_images_list)} 张异常图片\n异常记录已保存到 temp/consecutive_anomalies/ 目录")
+            msg_box.setIcon(QMessageBox.Critical)
+            msg_box.setStandardButtons(QMessageBox.Ok)
+            
+            # 设置弹窗尺寸和样式
+            msg_box.resize(500, 200)
+            msg_box.setStyleSheet("""
+                QMessageBox {
+                    background-color: white;
+                    font-size: 12px;
+                    min-width: 500px;
+                }
+                QMessageBox QLabel {
+                    color: #d32f2f;
+                    font-weight: bold;
+                    font-size: 14px;
+                }
+                QMessageBox QPushButton {
+                    background-color: #f44336;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    min-width: 100px;
+                    font-size: 12px;
+                }
+                QMessageBox QPushButton:hover {
+                    background-color: #d32f2f;
+                }
+            """)
+            
+            msg_box.exec_()
+            
+            # 在日志中记录详细信息
+            logger.warning("连续异常图片详细信息:")
+            for i, anomaly_info in enumerate(anomaly_images_list, 1):
+                logger.warning(f"异常图片 {i}: {os.path.basename(anomaly_info['file_path'])} (process_id: {anomaly_info['process_id']})")
+                
+        except Exception as e:
+            logger.error(f"处理连续异常检测回调失败: {str(e)}")
         
     def select_image(self):
         """选择图片文件"""
