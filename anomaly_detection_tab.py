@@ -281,7 +281,7 @@ class BatchProcessingThread(QThread):
             self.progress.emit(f"正在处理图片: {os.path.basename(image_path)}")
             
             # 使用现有的图片处理逻辑
-            ssh_client = SSHClient()
+            ssh_client = SSHClient(batch_process=True)
             local_result_pre_image, local_result_heat_map, local_result_json = ssh_client.process_images(image_path)
             
             # 记录已处理的图片和对应的process_id
@@ -1036,12 +1036,12 @@ class AnomalyDetectionWidget(QWidget):
             'json': json_path
         }
         
-        # 显示结果
-        self.display_results()
+        # 批处理只显示json结果
+        self.display_json_result()
         
         logger.info(f"批处理图片处理完成")
-        logger.info(f"预测结果: {prediction_path}")
-        logger.info(f"热力图: {heatmap_path}")
+        # logger.info(f"预测结果: {prediction_path}")
+        # logger.info(f"热力图: {heatmap_path}")
         logger.info(f"JSON结果: {json_path}")
     
     def on_batch_progress_update(self, current, total):

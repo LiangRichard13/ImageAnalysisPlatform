@@ -9,7 +9,7 @@ import shutil
 logger = logging.getLogger(__name__)
 
 class SSHClient:
-    def __init__(self):
+    def __init__(self,batch_process: bool = False):
         # 加载环境变量
         load_dotenv()
         self.process_id = self.get_process_id()
@@ -23,6 +23,7 @@ class SSHClient:
         self.conda_executable = os.getenv('CONDA_EXECUTABLE_ANOMALY_DETECTION')
         self.conda_env_name = os.getenv('CONDA_ENV_NAME_ANOMALY_DETECTION')
         self.local_download_dir = "download/anomaly_detection"
+        self.batch_process = batch_process
 
     def connect(self):
         """建立SSH连接"""
@@ -99,16 +100,32 @@ class SSHClient:
             logging.error(f"文件传输过程中发生错误: {e}")
             return None
         
-    def download_result(self,image_path:str) -> str:
+    def download_result(self, image_path: str) -> tuple[str, str, str]:
         """
-        从服务器下载结果文件
+        从服务器下载结果文件。
+        在批处理模式 (self.batch_process=True) 下，仅下载 result.json 文件。
+        
+        Args:
+            image_path (str): 本地原始图片文件的路径。
+
         Returns:
-            str: 本地结果文件路径
+            tuple[str, str, str]: (本地预测图路径, 本地热力图路径, 本地JSON文件路径)。
+                                在批处理模式下，预测图和热力图路径可能为空字符串 ''。
         """
+        # 局部变量初始化
+        local_result_pre_image = ''
+        local_result_heat_map = ''
+        remote_result_pre_image = ''
+        remote_result_heat_map = ''
+
         # 本地下载地址
         local_result_dir = os.path.join(self.local_download_dir, self.process_id)
-        local_result_pre_image = os.path.join(local_result_dir, 'prediction.png')
-        local_result_heat_map = os.path.join(local_result_dir, 'heat_map.png')
+        
+        if not self.batch_process:
+            # 非批处理模式，定义图片文件路径
+            local_result_pre_image = os.path.join(local_result_dir, 'prediction.png')
+            local_result_heat_map = os.path.join(local_result_dir, 'heat_map.png')
+            
         local_result_json = os.path.join(local_result_dir, 'result.json')
 
         # 如果没有这个文件夹，则创建
@@ -116,38 +133,48 @@ class SSHClient:
             os.makedirs(local_result_dir)
 
         # 拼接远程结果文件路径
-        remote_result_pre_image = os.path.join(self.remote_result_dir_path, f"{self.process_id}.png").replace('\\', '/')
-        remote_result_heat_map = os.path.join(self.remote_result_dir_path, f"{self.process_id}_heatmap.png").replace('\\', '/')
+        if not self.batch_process:
+            remote_result_pre_image = os.path.join(self.remote_result_dir_path, f"{self.process_id}.png").replace('\\', '/')
+            remote_result_heat_map = os.path.join(self.remote_result_dir_path, f"{self.process_id}_heatmap.png").replace('\\', '/')
+            
         remote_result_json = os.path.join(self.remote_result_dir_path, f"{self.process_id}.json").replace('\\', '/')
         
-
-        logger.info(f"准备下载文件: {remote_result_pre_image} -> {local_result_pre_image}")
-        logger.info(f"准备下载文件: {remote_result_heat_map} -> {local_result_heat_map}")
+        # 日志输出
+        if not self.batch_process:
+            logger.info(f"准备下载文件: {remote_result_pre_image} -> {local_result_pre_image}")
+            logger.info(f"准备下载文件: {remote_result_heat_map} -> {local_result_heat_map}")
         logger.info(f"准备下载文件: {remote_result_json} -> {local_result_json}")
+        
         try:
-            # 下载结果可视化文件
-            # 将原图复制到结果目录
+            # 将原图复制到结果目录（无论是否批处理都需要原图）
             image_filename = os.path.basename(image_path)
             shutil.copy(image_path, os.path.join(local_result_dir, image_filename))
             logger.info(f"成功复制原图到结果目录: {os.path.join(local_result_dir, image_filename)}")
 
-            self.sftp.get(remotepath=remote_result_pre_image, localpath=local_result_pre_image)
-            self.sftp.get(remotepath=remote_result_heat_map, localpath=local_result_heat_map)
+            # 下载结果文件
+            if not self.batch_process:
+                self.sftp.get(remotepath=remote_result_pre_image, localpath=local_result_pre_image)
+                self.sftp.get(remotepath=remote_result_heat_map, localpath=local_result_heat_map)
+                logger.info(f"成功下载结果文件: {local_result_pre_image}")
+                logger.info(f"成功下载结果文件: {local_result_heat_map}") # 修复：原代码这里没有判断
+
             self.sftp.get(remotepath=remote_result_json, localpath=local_result_json)
-            logger.info(f"成功下载结果文件: {local_result_pre_image}")
-            logger.info(f"成功下载结果文件: {local_result_heat_map}")
             logger.info(f"成功下载结果文件: {local_result_json}")
 
         except Exception as e:
             logger.error(f"下载结果失败: {e}")
-            logger.error(f"远程文件路径: {remote_result_pre_image}")
-            logger.error(f"远程文件路径: {remote_result_heat_map}")
+            # 统一错误日志输出，避免在 batch_process 时访问未定义的变量
+            if not self.batch_process:
+                logger.error(f"远程文件路径: {remote_result_pre_image}")
+                logger.error(f"远程文件路径: {remote_result_heat_map}")
+                logger.error(f"本地文件路径: {local_result_pre_image}")
+                logger.error(f"本地文件路径: {local_result_heat_map}")
+                
             logger.error(f"远程文件路径: {remote_result_json}")
-            logger.error(f"本地文件路径: {local_result_pre_image}")
-            logger.error(f"本地文件路径: {local_result_heat_map}")
             logger.error(f"本地文件路径: {local_result_json}")
             raise e
 
+        # 无论是否批处理，都返回完整的路径元组,如果是批处理模式，图片路径为空字符串
         return local_result_pre_image, local_result_heat_map, local_result_json
 
     def process_images(self, image_path: str):
