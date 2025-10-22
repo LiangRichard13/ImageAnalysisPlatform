@@ -1,4 +1,3 @@
-import sys
 import os
 import logging
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -88,7 +87,7 @@ class CheckpointSelectionDialog(QDialog):
         
         self.use_selected_btn = QPushButton("使用选中检查点")
         self.use_selected_btn.clicked.connect(self.use_selected_checkpoint)
-        self.use_selected_btn.setEnabled(False)
+        self.use_selected_btn.setEnabled(True)
         button_layout.addWidget(self.use_selected_btn)
         
         self.create_new_btn = QPushButton("创建新检查点")
@@ -152,10 +151,11 @@ class CheckpointSelectionDialog(QDialog):
         """选择变化回调"""
         selected_items = self.checkpoint_list.selectedItems()
         self.use_selected_btn.setEnabled(len(selected_items) > 0)
-    
+
     def on_item_double_clicked(self, item):
         """双击项目回调"""
         self.use_selected_checkpoint()
+        
     
     def use_selected_checkpoint(self):
         """使用选中的检查点"""
@@ -182,7 +182,7 @@ class BatchProcessingThread(QThread):
         super().__init__()
         self.processing_dir = processing_dir
         self.checkpoint_file = checkpoint_file
-        self.processed_images = set()
+        self.processed_images = {}  # 改为字典，存储图片路径和对应的处理信息
         self.is_running = True
         self.polling_interval = 5  # 轮询间隔5秒
         self.current_batch_images = []  # 当前批次的图片列表
@@ -277,14 +277,18 @@ class BatchProcessingThread(QThread):
             ssh_client = SSHClient()
             local_result_pre_image, local_result_heat_map, local_result_json = ssh_client.process_images(image_path)
             
-            # 记录已处理的图片
-            self.processed_images.add(image_path)
+            # 记录已处理的图片和对应的process_id
+            self.processed_images[image_path] = {
+                'file_path': image_path,
+                'process_id': ssh_client.process_id,
+                'processed_time': datetime.datetime.now().isoformat()
+            }
             
             # 更新检查点
             if self.checkpoint_file:
                 self.update_checkpoint()
             
-            logger.info(f"图片处理完成: {os.path.basename(image_path)}")
+            logger.info(f"图片处理完成: {os.path.basename(image_path)} (process_id: {ssh_client.process_id})")
             self.progress.emit(f"图片处理完成: {os.path.basename(image_path)}")
             
             # 发送处理完成信号
@@ -301,7 +305,26 @@ class BatchProcessingThread(QThread):
         try:
             with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
                 checkpoint_data = json.load(f)
-                self.processed_images = set(checkpoint_data.get('processed_images', []))
+                processed_images_data = checkpoint_data.get('processed_images', [])
+                
+                # 兼容新旧格式的checkpoint文件
+                if processed_images_data and isinstance(processed_images_data[0], dict):
+                    # 新格式：包含process_id和处理信息的字典列表
+                    self.processed_images = {}
+                    for item in processed_images_data:
+                        file_path = item.get('file_path')
+                        if file_path:
+                            self.processed_images[file_path] = item
+                else:
+                    # 旧格式：只有文件路径的列表
+                    self.processed_images = {}
+                    for file_path in processed_images_data:
+                        self.processed_images[file_path] = {
+                            'file_path': file_path,
+                            'process_id': 'unknown',  # 旧格式没有process_id
+                            'processed_time': 'unknown'
+                        }
+                
             logger.info(f"加载检查点，已处理 {len(self.processed_images)} 张图片")
         except Exception as e:
             logger.error(f"加载检查点失败: {str(e)}")
@@ -313,8 +336,11 @@ class BatchProcessingThread(QThread):
             if not os.path.exists(checkpoint_dir):
                 os.makedirs(checkpoint_dir)
                 
+            # 将字典值转换为列表，只保留处理信息
+            processed_images_list = list(self.processed_images.values())
+            
             checkpoint_data = {
-                'processed_images': list(self.processed_images),
+                'processed_images': processed_images_list,
                 'last_update': datetime.datetime.now().isoformat()
             }
             

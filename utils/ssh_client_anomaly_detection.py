@@ -170,7 +170,7 @@ class SSHClient:
             if image_type == "square":
                 script_name = "api.py"
             elif image_type == "very long":
-                script_name = "api_v2_http.py"
+                script_name = "api_v2_http_batch.py"
             else:
                 script_name = "api_v3_http.py"
             logger.info(f"图片类型判断: {image_type}, 使用脚本: {script_name}")
