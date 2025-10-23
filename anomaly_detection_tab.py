@@ -1576,7 +1576,7 @@ class AnomalyDetectionWidget(QWidget):
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("选择预览模式")
         msg_box.setText("是否启用在线预览热力图和预测图？")
-        msg_box.setInformativeText("启用预览会延长在线处理时间，但可以实时查看处理结果。\n选择'是'将异步下载并展示热力图和预测图。\n选择'否'将只显示JSON结果，处理速度更快。")
+        msg_box.setInformativeText("启用预览会延长在线处理时间，但可以实时查看处理结果。\n选择'是'将异步下载并展示热力图和预测图。\n选择'否'将只显示JSON结果，处理速度更快，完整处理结果可通过批量下载获取。")
         msg_box.setIcon(QMessageBox.Question)
         msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
         msg_box.setDefaultButton(QMessageBox.No)
