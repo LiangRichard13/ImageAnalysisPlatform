@@ -176,31 +176,6 @@ class SSHClient:
 
         # 无论是否批处理，都返回完整的路径元组,如果是批处理模式，图片路径为空字符串
         return local_result_pre_image, local_result_heat_map, local_result_json
-    
-    def download_heatmap_predition(self):
-        """
-        下载热力图和预测图
-        """
-        # 本地下载地址
-        local_result_dir = os.path.join(self.local_download_dir, self.process_id)
-        local_result_pre_image = os.path.join(local_result_dir, 'prediction.png')
-        local_result_heat_map = os.path.join(local_result_dir, 'heat_map.png')
-        # 远程结果文件路径
-        remote_result_pre_image = os.path.join(self.remote_result_dir_path,self.process_id,f"{self.process_id}.png").replace('\\', '/')
-        remote_result_heat_map = os.path.join(self.remote_result_dir_path,self.process_id,f"{self.process_id}_heatmap.png").replace('\\', '/')
-        # 日志输出
-        logger.info(f"准备下载文件: {remote_result_pre_image} -> {local_result_pre_image}")
-        logger.info(f"准备下载文件: {remote_result_heat_map} -> {local_result_heat_map}")
-        self.sftp.get(remotepath=remote_result_pre_image, localpath=local_result_pre_image)
-        try:
-            self.sftp.get(remotepath=remote_result_heat_map, localpath=local_result_heat_map)
-            logger.info(f"成功下载结果文件: {local_result_pre_image}")
-            logger.info(f"成功下载结果文件: {local_result_heat_map}")
-        except Exception as e:
-            logger.error(f"下载结果失败: {e}")
-            raise e
-        # 无论结果是否成功下载，返回本地路径
-        return local_result_pre_image, local_result_heat_map
 
     def process_images(self, image_path: str)-> tuple[str, str]:
         """
@@ -385,6 +360,51 @@ class SSHBatchDownload(SSHClient):
             self.download_results_batch(process_ids_list)
         except Exception as e:
             logger.error(f"批量下载过程中出现错误: {e}")
+            raise e
+        finally:
+            self.close()
+
+    def download_heatmap_predition(self,process_id: str):
+        """
+        下载热力图和预测图
+        """
+        # 本地下载地址
+        local_result_dir = os.path.join(self.local_download_dir, process_id)
+        local_result_pre_image = os.path.join(local_result_dir, 'prediction.png')
+        local_result_heat_map = os.path.join(local_result_dir, 'heat_map.png')
+        # 远程结果文件路径
+        remote_result_pre_image = os.path.join(self.remote_result_dir_path,process_id,f"{process_id}.png").replace('\\', '/')
+        remote_result_heat_map = os.path.join(self.remote_result_dir_path,process_id,f"{process_id}_heatmap.png").replace('\\', '/')
+        # 日志输出
+        logger.info(f"准备下载文件: {remote_result_pre_image} -> {local_result_pre_image}")
+        logger.info(f"准备下载文件: {remote_result_heat_map} -> {local_result_heat_map}")
+        self.sftp.get(remotepath=remote_result_pre_image, localpath=local_result_pre_image)
+        try:
+            self.sftp.get(remotepath=remote_result_heat_map, localpath=local_result_heat_map)
+            logger.info(f"成功下载结果文件: {local_result_pre_image}")
+            logger.info(f"成功下载结果文件: {local_result_heat_map}")
+        except Exception as e:
+            logger.error(f"下载结果失败: {e}")
+            raise e
+        # 无论结果是否成功下载，返回本地路径
+        return local_result_pre_image, local_result_heat_map
+
+    def handle_download_heatmap_predition(self, process_id):
+        """
+        处理下载热力图和预测图
+        Args:
+            process_id: 单个处理ID
+        Returns:
+            tuple[str, str]: (本地预测图路径, 本地热力图路径)
+        """
+        try:
+            # 连接服务器
+            self.connect()
+            # 下载单个处理ID的预测图和热力图
+            local_result_pre_image, local_result_heat_map = self.download_heatmap_predition(process_id)
+            return local_result_pre_image, local_result_heat_map
+        except Exception as e:
+            logger.error(f"下载热力图和预测图过程中出现错误: {e}")
             raise e
         finally:
             self.close()

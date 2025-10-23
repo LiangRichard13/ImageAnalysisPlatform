@@ -9,6 +9,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QObject
 from PyQt5.QtGui import QPixmap, QFont
 from utils.ssh_client_anomaly_detection import SSHClient, SSHBatchDownload
+import queue
 from dotenv import load_dotenv
 import tempfile
 import shutil
@@ -19,6 +20,92 @@ from pathlib import Path
 
 # 设置日志
 logger = logging.getLogger(__name__)
+
+class AsyncImageDownloadThread(QThread):
+    """异步图片下载线程"""
+    download_finished = pyqtSignal(str, str, str)  # process_id, prediction_path, heatmap_path
+    download_failed = pyqtSignal(str)  # process_id
+    
+    def __init__(self, process_id):
+        super().__init__()
+        self.process_id = process_id
+        
+    def run(self):
+        try:
+            logger.info(f"开始异步下载热力图和预测图: {self.process_id}")
+            
+            # 使用SSHBatchDownload创建独立SSH连接
+            ssh_download = SSHBatchDownload()
+            
+            # 调用handle_download_heatmap_predition方法下载
+            prediction_path, heatmap_path = ssh_download.handle_download_heatmap_predition(self.process_id)
+            
+            logger.info(f"异步下载完成: {self.process_id}")
+            logger.info(f"预测图路径: {prediction_path}")
+            logger.info(f"热力图路径: {heatmap_path}")
+            
+            self.download_finished.emit(self.process_id, prediction_path, heatmap_path)
+            
+        except Exception as e:
+            error_msg = f"异步下载失败 {self.process_id}: {str(e)}"
+            logger.error(error_msg)
+            self.download_failed.emit(self.process_id)
+
+class DownloadQueueManager(QObject):
+    """下载队列管理器，确保一次只下载一张图片"""
+    request_download = pyqtSignal(str)  # process_id
+    
+    def __init__(self):
+        super().__init__()
+        self.download_queue = queue.Queue()
+        self.current_download_thread = None
+        self.is_downloading = False
+        
+    def add_to_queue(self, process_id):
+        """添加下载任务到队列"""
+        logger.info(f"添加下载任务到队列: {process_id}")
+        self.download_queue.put(process_id)
+        self.process_next_download()
+        
+    def process_next_download(self):
+        """处理下一个下载任务"""
+        if self.is_downloading:
+            logger.info("当前有下载任务进行中，等待完成")
+            return
+            
+        if self.download_queue.empty():
+            logger.info("下载队列为空")
+            return
+            
+        process_id = self.download_queue.get()
+        logger.info(f"开始处理下载任务: {process_id}")
+        
+        self.is_downloading = True
+        self.current_download_thread = AsyncImageDownloadThread(process_id)
+        self.current_download_thread.download_finished.connect(self.on_download_finished)
+        self.current_download_thread.download_failed.connect(self.on_download_failed)
+        self.current_download_thread.start()
+        
+    def on_download_finished(self, process_id, prediction_path, heatmap_path):
+        """下载完成回调"""
+        logger.info(f"下载任务完成: {process_id}")
+        self.is_downloading = False
+        self.current_download_thread = None
+        
+        # 发射信号通知主界面更新显示
+        self.request_download.emit(process_id)
+        
+        # 处理下一个下载任务
+        self.process_next_download()
+        
+    def on_download_failed(self, process_id):
+        """下载失败回调"""
+        logger.error(f"下载任务失败: {process_id}")
+        self.is_downloading = False
+        self.current_download_thread = None
+        
+        # 处理下一个下载任务
+        self.process_next_download()
 
 class ImageProcessingThread(QThread):
     """图片处理线程"""
@@ -314,11 +401,14 @@ class BatchProcessingThread(QThread):
     image_processed = pyqtSignal(str, str, str)  # 单张图片处理完成信号
     batch_progress = pyqtSignal(int, int) # 批处理进度信号（当前进度，总数量）
     consecutive_anomaly_detected = pyqtSignal(list)  # 连续异常检测信号，传递异常图片列表
+    request_async_download = pyqtSignal(str)  # 请求异步下载信号
+    update_preview = pyqtSignal(str)      # 更新图片预览信号，传递图片路径
     
-    def __init__(self, processing_dir, checkpoint_file=None):
+    def __init__(self, processing_dir, checkpoint_file=None, enable_preview=False):
         super().__init__()
         self.processing_dir = processing_dir
         self.checkpoint_file = checkpoint_file
+        self.enable_preview = enable_preview  # 是否启用预览
         self.processed_images = {}  # 改为字典，存储图片路径和对应的处理信息
         self.is_running = True
         self.polling_interval = 5  # 轮询间隔5秒
@@ -415,6 +505,9 @@ class BatchProcessingThread(QThread):
             logger.info(f"开始处理图片: {os.path.basename(image_path)}")
             self.progress.emit(f"正在处理图片: {os.path.basename(image_path)}")
             
+            # 更新图片预览
+            self.update_preview.emit(image_path)
+            
             # 使用现有的图片处理逻辑
             ssh_client = SSHClient(batch_process=True)
             local_result_pre_image, local_result_heat_map, local_result_json = ssh_client.process_images(image_path)
@@ -435,6 +528,11 @@ class BatchProcessingThread(QThread):
             
             # 检查是否为异常图片并更新连续异常计数
             self.check_anomaly_and_update_count(image_path, ssh_client.process_id, local_result_json)
+            
+            # 如果启用预览，请求异步下载热力图和预测图
+            if self.enable_preview:
+                logger.info(f"启用预览模式，请求异步下载: {ssh_client.process_id}")
+                self.request_async_download.emit(ssh_client.process_id)
             
             # 发送处理完成信号
             self.image_processed.emit(local_result_pre_image, local_result_heat_map, local_result_json)
@@ -734,8 +832,12 @@ class AnomalyDetectionWidget(QWidget):
         self.download_thread = None  # 下载线程
         self.is_downloading = False  # 下载状态
         
+        # 创建下载队列管理器
+        self.download_queue_manager = DownloadQueueManager()
+        
         self.init_ui()
         self.setup_logging()
+        self.setup_download_queue()
         
     def init_ui(self):
         """初始化用户界面"""
@@ -1273,6 +1375,11 @@ class AnomalyDetectionWidget(QWidget):
         # 记录启动信息
         logger.info("异常检测系统启动")
         
+    def setup_download_queue(self):
+        """设置下载队列管理器"""
+        # 连接下载队列管理器的信号
+        self.download_queue_manager.request_download.connect(self.on_async_download_finished)
+        
     def start_batch_processing(self):
         """启动在线批处理"""
         try:
@@ -1318,14 +1425,20 @@ class AnomalyDetectionWidget(QWidget):
                 checkpoint_file = os.path.join(checkpoint_dir, f"{timestamp}.json")
                 logger.info(f"创建新的检查点文件: {checkpoint_file}")
             
+            # 询问用户是否启用预览功能
+            enable_preview = self.ask_preview_option()
+            logger.info(f"用户选择预览模式: {enable_preview}")
+            
             # 启动批处理线程
-            self.batch_thread = BatchProcessingThread(processing_dir, checkpoint_file)
+            self.batch_thread = BatchProcessingThread(processing_dir, checkpoint_file, enable_preview)
             self.batch_thread.progress.connect(self.on_batch_progress)
             self.batch_thread.error.connect(self.on_batch_error)
             self.batch_thread.batch_finished.connect(self.on_batch_finished)
             self.batch_thread.image_processed.connect(self.on_batch_image_processed)
             self.batch_thread.batch_progress.connect(self.on_batch_progress_update)
             self.batch_thread.consecutive_anomaly_detected.connect(self.on_consecutive_anomaly_detected)
+            self.batch_thread.request_async_download.connect(self.download_queue_manager.add_to_queue)
+            self.batch_thread.update_preview.connect(self.on_batch_preview_update)
             self.batch_thread.start()
             
             # 更新界面状态
@@ -1457,6 +1570,93 @@ class AnomalyDetectionWidget(QWidget):
                 
         except Exception as e:
             logger.error(f"处理连续异常检测回调失败: {str(e)}")
+    
+    def ask_preview_option(self):
+        """询问用户是否启用预览功能"""
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("选择预览模式")
+        msg_box.setText("是否启用在线预览热力图和预测图？")
+        msg_box.setInformativeText("启用预览会延长在线处理时间，但可以实时查看处理结果。\n选择'是'将异步下载并展示热力图和预测图。\n选择'否'将只显示JSON结果，处理速度更快。")
+        msg_box.setIcon(QMessageBox.Question)
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg_box.setDefaultButton(QMessageBox.No)
+        
+        # 设置弹窗样式
+        msg_box.setStyleSheet("""
+            QMessageBox {
+                background-color: white;
+                font-size: 12px;
+                min-width: 500px;
+            }
+            QMessageBox QLabel {
+                color: #333;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QMessageBox QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 4px;
+                font-weight: bold;
+                min-width: 100px;
+                font-size: 12px;
+            }
+            QMessageBox QPushButton:hover {
+                background-color: #1976D2;
+            }
+        """)
+        
+        result = msg_box.exec_()
+        return result == QMessageBox.Yes
+    
+    def on_async_download_finished(self, process_id):
+        """异步下载完成回调"""
+        try:
+            logger.info(f"异步下载完成，更新界面显示: {process_id}")
+            
+            # 构建本地文件路径
+            local_result_dir = os.path.join("download/anomaly_detection", process_id)
+            prediction_path = os.path.join(local_result_dir, 'prediction.png')
+            heatmap_path = os.path.join(local_result_dir, 'heat_map.png')
+            
+            # 检查文件是否存在
+            if os.path.exists(prediction_path) and os.path.exists(heatmap_path):
+                # 更新当前结果
+                self.current_results = {
+                    'prediction': prediction_path,
+                    'heatmap': heatmap_path,
+                    'json': self.current_results.get('json', '') if self.current_results else ''
+                }
+                
+                # 显示图片结果
+                self.display_image_result(self.prediction_tab, prediction_path, "预测结果")
+                self.display_image_result(self.heatmap_tab, heatmap_path, "热力图")
+                
+                logger.info(f"界面显示已更新: {process_id}")
+            else:
+                logger.warning(f"下载的文件不存在: {process_id}")
+                
+        except Exception as e:
+            logger.error(f"更新界面显示失败: {str(e)}")
+    
+    def on_batch_preview_update(self, image_path):
+        """批处理预览更新回调"""
+        try:
+            logger.info(f"更新批处理图片预览: {os.path.basename(image_path)}")
+            
+            # 更新图片名称显示
+            self.image_name_label.setText(os.path.basename(image_path))
+            self.image_name_label.setStyleSheet("color: black; font-weight: bold;")
+            
+            # 更新图片预览
+            self.display_image_preview(image_path)
+            
+            logger.info(f"批处理图片预览已更新: {os.path.basename(image_path)}")
+            
+        except Exception as e:
+            logger.error(f"更新批处理图片预览失败: {str(e)}")
     
     def start_batch_download(self):
         """启动批量下载"""
