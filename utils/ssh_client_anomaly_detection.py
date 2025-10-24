@@ -303,7 +303,10 @@ class SSHClient:
         Returns:
             str: 处理ID
         """
-        return FileNamer.generate_time_based_name()
+        # 不使用基于时间戳的process_id
+        # return FileNamer.generate_time_based_name()
+        # 使用基于时间戳+uuid和哈希加密的唯一字符串
+        return FileNamer.generate_unique_string()
     
 class SSHBatchDownload(SSHClient):
     def __init__(self):

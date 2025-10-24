@@ -2001,6 +2001,13 @@ class AnomalyDetectionWidget(QWidget):
                 }
             """)
             
+            # 设置定时器，3秒后自动关闭
+            timer = QTimer()
+            timer.setSingleShot(True)
+            timer.timeout.connect(msg_box.accept)  # 使用accept()而不是close()
+            timer.start(1500)  # 3秒后自动关闭
+            
+            # 显示弹窗（模态）
             msg_box.exec_()
             
         except Exception as e:
